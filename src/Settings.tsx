@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open, save } from "@tauri-apps/plugin-dialog";
-import { run, setSetting, colors, closeDb, getSetting, today } from "./db";
+import { run, setSetting, colors, closeDb, openDb, getSetting, today } from "./db";
 import { changed, startLibrary, getRoot } from "./lib";
 import { prefs, toast, sound } from "./fx";
 import { useData, useVersion } from "./ui";
@@ -53,10 +53,11 @@ export default function Settings() {
     const path = await save({ defaultPath: `tbd-backup-${today()}.db`, filters: [{ name: "Backup", extensions: ["db"] }] });
     if (!path) return;
     try {
+      await invoke("clear_backup_target", { path }); // the dialog already confirmed replacing it
       await run(`VACUUM INTO $1`, [path]);
       toast("Backup saved ✓");
     } catch (e) {
-      toast(`Backup failed: ${e}. If a file with that name exists, pick a new name.`);
+      toast(`Backup failed: ${e}`);
     }
   }
 
@@ -68,8 +69,10 @@ export default function Settings() {
     await closeDb();
     try {
       await invoke("restore_db", { src: path });
-    } finally {
       location.reload();
+    } catch (e) {
+      await openDb(); // nothing was replaced; carry on with the current data
+      toast(`Couldn't restore: ${e}`);
     }
   }
 

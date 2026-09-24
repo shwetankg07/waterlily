@@ -1,16 +1,34 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { AnnotationMode, TextLayer, type PDFDocumentProxy, type PDFPageProxy } from "pdfjs-dist";
+import { AnnotationMode, TextLayer, type PDFDocumentProxy, type PDFPageProxy, type RenderTask } from "pdfjs-dist/legacy/build/pdf.mjs";
 import { q, run, logActivity, parseHl, colors, type Color, type FileRow, type Highlight, type HighlightRow } from "./db";
-import { readBytes, openPdf, scheduleSave, flushSaves, displayName, changed } from "./lib";
+import { readBytes, openPdf, importNew, markDirty, flushSaves, displayName, changed, pdfError } from "./lib";
 import { toPdfRect, toViewBox, mergeLineRects, type Rect } from "./pdfcore";
 import { sound, sparkle, toast } from "./fx";
+import { useVersion } from "./ui";
 import type { Go } from "./App";
 
 type Mode = "read" | "quiz" | "collapse";
 type Pending = { x: number; y: number; parts: { page: number; rects: Rect[]; text: string }[] };
 type Active = { id: string; x: number; y: number };
 
+/**
+ * Our overlay draws highlights, so hide the PDF's own copies of them. Every other annotation
+ * (a professor's ink, stamps, comments) still renders with the page.
+ */
+const hidden = new WeakMap<PDFPageProxy, Promise<void>>();
+function hideHighlights(doc: PDFDocumentProxy, page: PDFPageProxy) {
+  let p = hidden.get(page);
+  if (!p) {
+    p = page.getAnnotations().then((annots) => {
+      for (const a of annots) if (a.subtype === "Highlight") doc.annotationStorage.setValue(a.id, { noView: true });
+    }).catch(() => {});
+    hidden.set(page, p);
+  }
+  return p;
+}
+
 export default function Reader({ fileId, page: startPage, go }: { fileId: number; page?: number; go: Go }) {
+  const v = useVersion();
   const [file, setFile] = useState<FileRow>();
   const [doc, setDoc] = useState<PDFDocumentProxy>();
   const [pages, setPages] = useState<PDFPageProxy[]>([]);
@@ -31,6 +49,11 @@ export default function Reader({ fileId, page: startPage, go }: { fileId: number
   const reloadHls = useCallback(async () => {
     setHls((await q<HighlightRow>(`SELECT * FROM highlights WHERE file_id=$1 ORDER BY page, created_at`, [fileId])).map(parseHl));
   }, [fileId]);
+  // Pick up highlights imported in the background (e.g. made in another app) and renamed colors.
+  useEffect(() => {
+    void reloadHls();
+    void colors().then(setCols);
+  }, [v, reloadHls]);
 
   // Load the PDF and every page proxy (cheap; lets us lay out all pages before rendering any).
   useEffect(() => {
@@ -38,27 +61,31 @@ export default function Reader({ fileId, page: startPage, go }: { fileId: number
     let live = true;
     (async () => {
       const [f] = await q<FileRow>(`SELECT * FROM files WHERE id=$1`, [fileId]);
-      if (!f) return go({ name: "library", folder: "" });
+      if (!f) return live && go({ name: "back" });
       setFile(f);
-      setCols(await colors());
-      await reloadHls();
       await run(`UPDATE files SET opened_at=$2 WHERE id=$1`, [fileId, Date.now()]);
+      let bytes: Uint8Array;
       try {
-        d = await openPdf(await readBytes(f.rel));
+        bytes = await readBytes(f.rel);
+        d = await openPdf(bytes);
       } catch (e) {
-        toast(`couldn't open this PDF: ${e}`);
-        return go({ name: "library", folder: "" });
+        if (!live) return;
+        toast(`Couldn't open "${displayName(f.rel)}": ${pdfError(e)}`);
+        return go({ name: "back" });
       }
-      const ps: PDFPageProxy[] = [];
-      for (let i = 1; i <= d.numPages; i++) ps.push(await d.getPage(i));
-      if (!live) return void d.loadingTask.destroy();
+      // Highlights made in another app since the last index show up right away.
+      await importNew(fileId, bytes).catch(() => 0);
+      await reloadHls();
+      const doc = d;
+      const ps = await Promise.all(Array.from({ length: doc.numPages }, (_, i) => doc.getPage(i + 1)));
+      if (!live) return void doc.loadingTask.destroy();
       const width = scroller.current?.clientWidth ?? 900;
       const maxW = Math.max(...ps.map((p) => p.getViewport({ scale: 1 }).width));
       setScale(Math.min(2.2, Math.max(0.6, (width - 64) / maxW)));
-      setDoc(d);
+      setDoc(doc);
       setPages(ps);
-      setCur(startPage ?? f.last_page ?? 1);
-    })();
+      setCur(Math.min(Math.max(1, startPage ?? f.last_page ?? 1), ps.length));
+    })().catch((e) => toast(`Something went wrong opening this PDF: ${e}`));
     return () => {
       live = false;
       void flushSaves();
@@ -67,12 +94,12 @@ export default function Reader({ fileId, page: startPage, go }: { fileId: number
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fileId]);
 
-  // Jump to the start page once laid out.
+  // Jump to the start page once laid out, then record it as read.
   const jumped = useRef(false);
   useEffect(() => {
     if (!pages.length || !scale || jumped.current) return;
     jumped.current = true;
-    requestAnimationFrame(() => scrollToPage(cur, false));
+    requestAnimationFrame(() => { scrollToPage(cur, false); requestAnimationFrame(trackPages); });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pages, scale]);
 
@@ -81,22 +108,30 @@ export default function Reader({ fileId, page: startPage, go }: { fileId: number
     if (el && scroller.current) scroller.current.scrollTo({ top: el.offsetTop - 16, behavior: smooth ? "smooth" : "auto" });
   }
 
-  // Track the current page; remember it for "continue reading" and progress.
+  // Current page (a third of the way down) for the toolbar and "continue reading"; the furthest
+  // page on screen counts toward progress, so short PDFs that never scroll still reach 100%.
   const saveProgress = useRef(0);
-  function onScroll() {
+  const written = useRef({ page: 0, seen: 0 });
+  function trackPages() {
     const s = scroller.current;
-    if (!s || mode === "collapse") return;
-    lastInput.current = Date.now();
-    const mid = s.scrollTop + s.clientHeight / 3;
-    let n = 1;
-    for (const el of s.querySelectorAll<HTMLElement>("[data-page]")) if (el.offsetTop <= mid) n = Number(el.dataset.page);
-    if (n !== cur) {
-      setCur(n);
-      clearTimeout(saveProgress.current);
-      saveProgress.current = window.setTimeout(() => {
-        run(`UPDATE files SET last_page=$2, max_page=max(max_page, $2) WHERE id=$1`, [fileId, n]).then(changed);
-      }, 800);
+    if (!s) return;
+    const mid = s.scrollTop + s.clientHeight / 3, bottom = s.scrollTop + s.clientHeight * 0.9;
+    let n = 1, seen = 1;
+    for (const el of s.querySelectorAll<HTMLElement>("[data-page]")) {
+      if (el.offsetTop <= mid) n = Number(el.dataset.page);
+      if (el.offsetTop <= bottom) seen = Number(el.dataset.page);
     }
+    setCur(n);
+    if (n === written.current.page && seen <= written.current.seen) return;
+    clearTimeout(saveProgress.current);
+    saveProgress.current = window.setTimeout(() => {
+      written.current = { page: n, seen: Math.max(seen, written.current.seen) };
+      run(`UPDATE files SET last_page=$2, max_page=max(max_page, $3) WHERE id=$1`, [fileId, n, seen]).then(changed);
+    }, 800);
+  }
+  function onScroll() {
+    lastInput.current = Date.now();
+    trackPages();
   }
 
   // Zoom keeps you on the same page.
@@ -104,6 +139,16 @@ export default function Reader({ fileId, page: startPage, go }: { fileId: number
     setScale((s) => Math.min(4, Math.max(0.4, +(s * k).toFixed(2))));
     requestAnimationFrame(() => requestAnimationFrame(() => scrollToPage(cur, false)));
   }
+  const zoomRef = useRef(zoom);
+  zoomRef.current = zoom;
+  // Ctrl + wheel (and touchpad pinch) zooms. Needs a non-passive listener to stop the page scrolling.
+  useEffect(() => {
+    const el = scroller.current;
+    if (!el) return;
+    const f = (e: WheelEvent) => { if (e.ctrlKey) { e.preventDefault(); zoomRef.current(e.deltaY < 0 ? 1.1 : 1 / 1.1); } };
+    el.addEventListener("wheel", f, { passive: false });
+    return () => el.removeEventListener("wheel", f);
+  }, [mode, doc]);
 
   // Passive reading time: 30s ticks while the window is focused and she's been active recently.
   useEffect(() => {
@@ -147,17 +192,6 @@ export default function Reader({ fileId, page: startPage, go }: { fileId: number
     offerSelection();
   }
 
-  // Touch long-press selection and keyboard selection finish without a pointerup on the page.
-  useEffect(() => {
-    let t = 0;
-    const f = () => {
-      clearTimeout(t);
-      t = window.setTimeout(() => { if (!pointerDown.current) offerSelection(); }, 350);
-    };
-    document.addEventListener("selectionchange", f);
-    return () => { clearTimeout(t); document.removeEventListener("selectionchange", f); };
-  });
-
   function offerSelection() {
     const sel = getSelection();
     if (!sel || sel.isCollapsed || mode !== "read" || !scroller.current?.contains(sel.anchorNode)) return;
@@ -181,14 +215,30 @@ export default function Reader({ fileId, page: startPage, go }: { fileId: number
     if (!parts.length) return;
     if (parts.length === 1) parts[0].text = sel.toString().replace(/\s+/g, " ").trim();
     const last = all[all.length - 1];
+    const width = cols.length * 34 + 24;
     setActive(null);
-    setPending({ x: Math.min(last.right, innerWidth - 220), y: Math.min(last.bottom + 8, innerHeight - 60), parts });
+    setPending({ x: Math.max(8, Math.min(last.right, innerWidth - width - 12)), y: Math.min(last.bottom + 8, innerHeight - 60), parts });
   }
+
+  // Touch long-press selection and keyboard selection finish without a pointerup on the page.
+  const offerRef = useRef(offerSelection);
+  offerRef.current = offerSelection;
+  useEffect(() => {
+    let t = 0;
+    const f = () => {
+      clearTimeout(t);
+      t = window.setTimeout(() => { if (!pointerDown.current) offerRef.current(); }, 350);
+    };
+    document.addEventListener("selectionchange", f);
+    return () => { clearTimeout(t); document.removeEventListener("selectionchange", f); };
+  }, []);
 
   async function createHighlight(colorId: number, at?: { x: number; y: number }) {
     if (!pending) return;
+    const { parts, x, y } = pending;
+    setPending(null);
     const ids: string[] = [];
-    for (const p of pending.parts) {
+    for (const p of parts) {
       const id = crypto.randomUUID();
       ids.push(id);
       await run(
@@ -196,20 +246,20 @@ export default function Reader({ fileId, page: startPage, go }: { fileId: number
         [id, fileId, p.page, JSON.stringify(p.rects), colorId, p.text, Date.now()],
       );
     }
+    await markDirty(fileId);
     await logActivity(fileId, { highlights: 1 });
     getSelection()?.removeAllRanges();
-    sparkle(at?.x ?? pending.x, at?.y ?? pending.y, colorOf.get(colorId));
+    sparkle(at?.x ?? x, at?.y ?? y, colorOf.get(colorId));
     sound.pop();
     setFresh(new Set(ids));
-    setPending(null);
     await reloadHls();
-    scheduleSave(fileId);
     changed();
   }
 
   // Number keys 1-9 pick a color for the current selection; Esc closes popovers.
   useEffect(() => {
     const k = (e: KeyboardEvent) => {
+      if ((e.target as HTMLElement).closest?.("input, textarea")) return;
       if (e.key === "Escape") { setPending(null); setActive(null); }
       if (pending && /^[1-9]$/.test(e.key) && cols[+e.key - 1]) void createHighlight(cols[+e.key - 1].id);
       if ((e.ctrlKey || e.metaKey) && (e.key === "=" || e.key === "+")) { e.preventDefault(); zoom(1.15); }
@@ -226,7 +276,8 @@ export default function Reader({ fileId, page: startPage, go }: { fileId: number
     setPending(null);
     const box = (e.currentTarget as HTMLElement).getBoundingClientRect();
     const [x, y] = pages[n - 1].getViewport({ scale }).convertToPdfPoint(e.clientX - box.left, e.clientY - box.top);
-    const hit = hls.find((h) => h.page === n && h.rects.some(([a, b, c, d]) => x >= a && x <= c && y >= b && y <= d));
+    // Newest first: it's drawn on top where highlights overlap.
+    const hit = [...hls].reverse().find((h) => h.page === n && h.rects.some(([a, b, c, d]) => x >= a && x <= c && y >= b && y <= d));
     if (!hit) { setActive(null); return; }
     if (mode === "quiz") {
       const s = new Set(revealed);
@@ -235,23 +286,22 @@ export default function Reader({ fileId, page: startPage, go }: { fileId: number
       sound.tick();
       return;
     }
-    setPending(null);
-    setActive({ id: hit.id, x: Math.min(e.clientX, innerWidth - 260), y: e.clientY + 12 });
+    setActive({ id: hit.id, x: Math.max(8, Math.min(e.clientX, innerWidth - 262)), y: e.clientY + 12 });
   }
 
   async function updateHl(id: string, patch: { color_id?: number; note?: string }) {
     if (patch.color_id !== undefined) await run(`UPDATE highlights SET color_id=$2 WHERE id=$1`, [id, patch.color_id]);
     if (patch.note !== undefined) await run(`UPDATE highlights SET note=$2 WHERE id=$1`, [id, patch.note]);
+    await markDirty(fileId);
     await reloadHls();
-    scheduleSave(fileId);
     changed();
   }
 
   async function deleteHl(id: string) {
-    await run(`DELETE FROM highlights WHERE id=$1`, [id]);
     setActive(null);
+    await run(`DELETE FROM highlights WHERE id=$1`, [id]);
+    await markDirty(fileId);
     await reloadHls();
-    scheduleSave(fileId);
     changed();
   }
 
@@ -267,8 +317,8 @@ export default function Reader({ fileId, page: startPage, go }: { fileId: number
         <span className="grow" />
         <div className="seg" role="group" aria-label="View">
           <button aria-pressed={mode === "read"} onClick={() => setMode("read")}>Read</button>
-          <button aria-pressed={mode === "quiz"} onClick={() => { setMode("quiz"); setRevealed(new Set()); }}>Quiz me</button>
-          <button aria-pressed={mode === "collapse"} onClick={() => setMode("collapse")}>Only highlights</button>
+          <button aria-pressed={mode === "quiz"} onClick={() => { setMode("quiz"); setRevealed(new Set()); setPending(null); setActive(null); }}>Quiz me</button>
+          <button aria-pressed={mode === "collapse"} onClick={() => { setMode("collapse"); setPending(null); setActive(null); }}>Only highlights</button>
         </div>
         {mode === "quiz" && <span className="muted">{quizCount}/{hls.length} revealed
           <button className="btn small ghost" onClick={() => setRevealed(quizCount === hls.length ? new Set() : new Set(hls.map((h) => h.id)))}>
@@ -284,19 +334,19 @@ export default function Reader({ fileId, page: startPage, go }: { fileId: number
       <div className={`rbody ${panel ? "" : "nopanel"}`}>
         {mode === "collapse" ? (
           <div className="pages">
-            <Collapsed pages={pages} hls={hls} colorOf={colorOf} onOpen={(n) => { setMode("read"); requestAnimationFrame(() => scrollToPage(n, false)); }} />
+            {doc && <Collapsed doc={doc} pages={pages} hls={hls} colorOf={colorOf} onOpen={(n) => { setMode("read"); requestAnimationFrame(() => scrollToPage(n, false)); }} />}
           </div>
         ) : (
           <div className={`pages ${mode === "quiz" ? "cloze" : ""}`} ref={scroller} onScroll={onScroll}
             onPointerDown={onPointerDown} onPointerUp={onPointerUp} onPointerMove={markPen}
-            onPointerCancel={() => (pointerDown.current = false)}
-            onWheel={(e) => { if (e.ctrlKey) { e.preventDefault(); zoom(e.deltaY < 0 ? 1.1 : 1 / 1.1); } }}>
+            onPointerCancel={() => (pointerDown.current = false)}>
+            {!pages.length && <div className="empty"><p className="hand">opening…</p></div>}
             {doc && scale > 0 && pages.map((p, i) => (
-              <PdfPage key={i} page={p} n={i + 1} scale={scale} root={scroller}
+              <PdfPage key={i} doc={doc} page={p} n={i + 1} scale={scale} root={scroller}
                 hls={hls.filter((h) => h.page === i + 1)} colorOf={colorOf} mode={mode} revealed={revealed} fresh={fresh}
                 onClick={onPageClick} />
             ))}
-            {hls.length === 0 && mode === "quiz" && <div className="empty"><p className="hand">nothing to quiz yet</p><p className="muted">Highlight something in Read mode first.</p></div>}
+            {pages.length > 0 && hls.length === 0 && mode === "quiz" && <div className="empty"><p className="hand">nothing to quiz yet</p><p className="muted">Highlight something in Read mode first.</p></div>}
           </div>
         )}
 
@@ -340,26 +390,38 @@ function HighlightPop({ hl, cols, at, onColor, onNote, onDelete, onClose }: {
   hl: Highlight; cols: Color[]; at: Active; onColor: (c: number) => void; onNote: (n: string) => void; onDelete: () => void; onClose: () => void;
 }) {
   const [note, setNote] = useState(hl.note);
-  const commit = () => note !== hl.note && onNote(note);
+  const latest = useRef(note);
+  latest.current = note;
+  const deleted = useRef(false);
+  // Save the note however the popover closes: Done, Esc, clicking elsewhere, or leaving the PDF.
+  useEffect(() => () => { if (!deleted.current && latest.current !== hl.note) onNote(latest.current); },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    []);
   return (
     <div className="pop" style={{ left: at.x, top: Math.min(at.y, innerHeight - 220), width: 250 }}>
       <div className="swatches">
         {cols.map((c) => <button key={c.id} className="swatch" style={{ background: c.hex }} aria-pressed={hl.color_id === c.id} title={c.name} aria-label={c.name} onClick={() => onColor(c.id)} />)}
       </div>
-      <textarea className="field" placeholder="Add a note…" value={note} autoFocus
-        onChange={(e) => setNote(e.target.value)} onBlur={commit}
-        onKeyDown={(e) => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { commit(); onClose(); } }} aria-label="Note" />
+      <textarea className="field" placeholder="Add a note…" value={note} autoFocus maxLength={2000}
+        onChange={(e) => setNote(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Escape") onClose();
+          if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) onClose();
+        }} aria-label="Note" />
       <div className="row">
-        <button className="btn small ghost" onClick={onDelete}>Delete highlight</button>
+        <button className="btn small ghost" onClick={() => { deleted.current = true; onDelete(); }}>Delete highlight</button>
         <span className="grow" />
-        <button className="btn small primary" onClick={() => { commit(); onClose(); }}>Done</button>
+        <button className="btn small primary" onClick={onClose}>Done</button>
       </div>
     </div>
   );
 }
 
-function PdfPage({ page, n, scale, root, hls, colorOf, mode, revealed, fresh, onClick }: {
-  page: PDFPageProxy; n: number; scale: number; root: React.RefObject<HTMLDivElement | null>;
+// Past ~16 megapixels a single canvas gets heavy (and at high zoom can exceed what the webview allows).
+const MAX_CANVAS_PIXELS = 16e6;
+
+function PdfPage({ doc, page, n, scale, root, hls, colorOf, mode, revealed, fresh, onClick }: {
+  doc: PDFDocumentProxy; page: PDFPageProxy; n: number; scale: number; root: React.RefObject<HTMLDivElement | null>;
   hls: Highlight[]; colorOf: Map<number, string>; mode: Mode; revealed: Set<string>; fresh: Set<string>;
   onClick: (e: React.MouseEvent, n: number) => void;
 }) {
@@ -371,7 +433,7 @@ function PdfPage({ page, n, scale, root, hls, colorOf, mode, revealed, fresh, on
 
   // Only pages near the viewport keep a canvas; far ones are freed.
   useEffect(() => {
-    const io = new IntersectionObserver(([e]) => setNear(e.isIntersecting), { root: root.current, rootMargin: "1200px 0px" });
+    const io = new IntersectionObserver(([e]) => setNear(e.isIntersecting), { root: root.current, rootMargin: "1000px 0px" });
     io.observe(box.current!);
     return () => io.disconnect();
   }, [root]);
@@ -379,12 +441,16 @@ function PdfPage({ page, n, scale, root, hls, colorOf, mode, revealed, fresh, on
   useEffect(() => {
     const c = canvas.current!, t = text.current!;
     if (!near) { c.width = c.height = 0; t.replaceChildren(); return; }
-    const dpr = devicePixelRatio || 1;
-    c.width = Math.floor(vp.width * dpr);
-    c.height = Math.floor(vp.height * dpr);
-    // ponytail: hides other apps' ink/stamps too; our overlay draws highlights. Filter by subtype if she ever needs them.
-    const task = page.render({ canvas: c, viewport: vp, transform: dpr !== 1 ? [dpr, 0, 0, dpr, 0, 0] : undefined, annotationMode: AnnotationMode.DISABLE });
-    task.promise.catch(() => {});
+    let dead = false;
+    let task: RenderTask | null = null;
+    const k = Math.min(devicePixelRatio || 1, Math.sqrt(MAX_CANVAS_PIXELS / (vp.width * vp.height)));
+    void hideHighlights(doc, page).then(() => {
+      if (dead) return;
+      c.width = Math.floor(vp.width * k);
+      c.height = Math.floor(vp.height * k);
+      task = page.render({ canvas: c, viewport: vp, transform: k !== 1 ? [k, 0, 0, k, 0, 0] : undefined, annotationMode: AnnotationMode.ENABLE_STORAGE });
+      task.promise.catch(() => {});
+    });
     t.replaceChildren();
     const tl = new TextLayer({ textContentSource: page.streamTextContent(), container: t, viewport: vp });
     tl.render().then(() => {
@@ -392,8 +458,8 @@ function PdfPage({ page, n, scale, root, hls, colorOf, mode, revealed, fresh, on
       end.className = "endOfContent";
       t.append(end);
     }).catch(() => {});
-    return () => { task.cancel(); tl.cancel(); };
-  }, [near, vp, page]);
+    return () => { dead = true; task?.cancel(); tl.cancel(); };
+  }, [near, vp, page, doc]);
 
   return (
     <div className="pdfpage" ref={box} data-page={n} onClick={(e) => onClick(e, n)}
@@ -416,31 +482,35 @@ function PdfPage({ page, n, scale, root, hls, colorOf, mode, revealed, fresh, on
 // ---------- "only highlights": crops of each highlight with adjustable context ----------
 
 const CROP_W = 860;
-function Collapsed({ pages, hls, colorOf, onOpen }: { pages: PDFPageProxy[]; hls: Highlight[]; colorOf: Map<number, string>; onOpen: (n: number) => void }) {
+function Collapsed({ doc, pages, hls, colorOf, onOpen }: {
+  doc: PDFDocumentProxy; pages: PDFPageProxy[]; hls: Highlight[]; colorOf: Map<number, string>; onOpen: (n: number) => void;
+}) {
   const images = useRef(new Map<number, Promise<string>>());
   const list = useRef<HTMLDivElement>(null);
   const [w, setW] = useState(CROP_W);
   useEffect(() => {
     if (!list.current) return;
-    const ro = new ResizeObserver(([e]) => setW(Math.min(CROP_W, Math.floor(e.contentRect.width))));
+    const ro = new ResizeObserver(([e]) => setW(Math.max(200, Math.min(CROP_W, Math.floor(e.contentRect.width)))));
     ro.observe(list.current);
     return () => ro.disconnect();
   }, [hls.length > 0]);
-  useEffect(() => () => { for (const p of images.current.values()) p.then(URL.revokeObjectURL); }, []);
+  useEffect(() => () => { for (const p of images.current.values()) void p.then(URL.revokeObjectURL, () => {}); }, []);
   const imageOf = useCallback((n: number) => {
     if (!images.current.has(n)) images.current.set(n, (async () => {
       const p = pages[n - 1];
-      const vp = p.getViewport({ scale: CROP_W / p.getViewport({ scale: 1 }).width * (devicePixelRatio || 1) });
+      await hideHighlights(doc, p);
+      const vp = p.getViewport({ scale: CROP_W / p.getViewport({ scale: 1 }).width * Math.min(devicePixelRatio || 1, 2) });
       const c = document.createElement("canvas");
       c.width = vp.width; c.height = vp.height;
-      await p.render({ canvas: c, viewport: vp, annotationMode: AnnotationMode.DISABLE }).promise;
-      return URL.createObjectURL(await new Promise<Blob>((r) => c.toBlob((b) => r(b!), "image/jpeg", 0.9)));
+      await p.render({ canvas: c, viewport: vp, annotationMode: AnnotationMode.ENABLE_STORAGE }).promise;
+      return URL.createObjectURL(await new Promise<Blob>((r, j) => c.toBlob((b) => (b ? r(b) : j(new Error("render failed"))), "image/jpeg", 0.9)));
     })());
     return images.current.get(n)!;
-  }, [pages]);
+  }, [pages, doc]);
   const sorted = [...hls].sort((a, b) => a.page - b.page || Math.max(...b.rects.map((r) => r[3])) - Math.max(...a.rects.map((r) => r[3])));
   if (!sorted.length) return <div className="empty"><p className="hand">no highlights yet</p><p className="muted">Highlights you make in Read mode show up here, without the rest of the page.</p></div>;
-  return <div className="collapse-list" ref={list}>{sorted.map((h) => <Crop key={h.id} h={h} w={w} page={pages[h.page - 1]} hex={colorOf.get(h.color_id) ?? "#ffe680"} imageOf={imageOf} onOpen={onOpen} />)}</div>;
+  return <div className="collapse-list" ref={list}>{sorted.map((h) => pages[h.page - 1] &&
+    <Crop key={h.id} h={h} w={w} page={pages[h.page - 1]} hex={colorOf.get(h.color_id) ?? "#ffe680"} imageOf={imageOf} onOpen={onOpen} />)}</div>;
 }
 
 function Crop({ h, w, page, hex, imageOf, onOpen }: { h: Highlight; w: number; page: PDFPageProxy; hex: string; imageOf: (n: number) => Promise<string>; onOpen: (n: number) => void }) {
@@ -452,7 +522,9 @@ function Crop({ h, w, page, hex, imageOf, onOpen }: { h: Highlight; w: number; p
   const top = Math.max(0, Math.min(...boxes.map((b) => b.top)) - pad);
   const bottom = Math.min(vp.height, Math.max(...boxes.map((b) => b.top + b.height)) + pad);
   useEffect(() => {
-    const io = new IntersectionObserver(([e]) => { if (e.isIntersecting) { imageOf(h.page).then(setSrc); io.disconnect(); } }, { rootMargin: "600px" });
+    const io = new IntersectionObserver(([e]) => {
+      if (e.isIntersecting) { imageOf(h.page).then(setSrc, () => {}); io.disconnect(); }
+    }, { rootMargin: "600px" });
     io.observe(ref.current!);
     return () => io.disconnect();
   }, [h.page, imageOf]);

@@ -18,6 +18,7 @@ export function toast(msg: string) {
 let ac: AudioContext | null = null;
 function tone(freq: number, at: number, dur: number, type: OscillatorType = "sine", vol = 0.12) {
   ac ??= new AudioContext();
+  if (ac.state === "suspended") void ac.resume(); // created outside a click: browsers start it paused
   const o = ac.createOscillator();
   const g = ac.createGain();
   const t = ac.currentTime + at;

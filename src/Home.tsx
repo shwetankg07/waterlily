@@ -1,5 +1,5 @@
 import { q, getSetting, today, type FileRow, type FolderRow } from "./db";
-import { displayName, baseName } from "./lib";
+import { displayName, baseName, dirs } from "./lib";
 import { useData, useVersion, loadDays, streakOf, dayCounts, daysUntil } from "./ui";
 import { Plant, StreakGraph } from "./Garden";
 import type { Go } from "./App";
@@ -40,7 +40,7 @@ export default function Home({ go }: { go: Go }) {
               <span className="grow">
                 <b>{displayName(f.rel)}</b>
                 <div className="muted" style={{ fontSize: ".85rem" }}>page {f.last_page}{f.pages ? ` of ${f.pages}` : ""}</div>
-                {f.pages > 0 && <div className="progress"><i style={{ width: `${(f.max_page / f.pages) * 100}%` }} /></div>}
+                {f.pages > 0 && <div className="progress"><i style={{ width: `${Math.min(100, (f.max_page / f.pages) * 100)}%` }} /></div>}
               </span>
             </button>
           )) : <p className="muted">PDFs you open will show up here. <button className="btn small" onClick={() => go({ name: "library", folder: "" })}>Open the library</button></p>}
@@ -48,7 +48,8 @@ export default function Home({ go }: { go: Go }) {
 
         <section className="tile">
           <h3>Exams coming up</h3>
-          {d.exams.length ? d.exams.map((e) => {
+          {/* Folders deleted or renamed outside the app keep their row; don't count down to them. */}
+          {d.exams.some((e) => dirs.includes(e.rel)) ? d.exams.filter((e) => dirs.includes(e.rel)).map((e) => {
             const n = daysUntil(e.exam_date!);
             return (
               <div key={e.rel} className="countdown">

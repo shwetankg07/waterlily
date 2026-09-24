@@ -37,9 +37,15 @@ The installer isn't code-signed, so the first run shows "Windows protected your 
 ## Known limits
 
 - Typed/digital PDFs only; scanned pages have no text to select.
-- Ink drawings and stamps made in other apps aren't shown in the reader (they stay in the file).
+- Password-protected PDFs can't be opened. PDFs locked against editing open fine, but their highlights stay in the app instead of being written into the file.
 - Links inside PDFs aren't clickable yet.
 - Renaming a folder outside the app loses its decorations.
+
+## Safety
+
+- Before writing highlights into a PDF, the app first imports any highlights other apps added to it, so nothing is lost.
+- Every write goes to a temporary file that is flushed to disk and checked with a second PDF reader before it replaces the original. If anything fails, the original is untouched and the highlights stay safe in the app.
+- A write interrupted by a crash or power cut is finished the next time the app starts.
 
 ## License
 

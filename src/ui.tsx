@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { changes } from "./lib";
 import { q, today } from "./db";
+import { toast } from "./fx";
 
 /** Re-render whenever library data changes. Use the returned number as an effect dependency. */
 export function useVersion() {
@@ -18,19 +19,27 @@ export function useData<T>(load: () => Promise<T>, deps: unknown[]): T | undefin
   const [d, setD] = useState<T>();
   useEffect(() => {
     let live = true;
-    load().then((x) => live && setD(x));
+    load().then((x) => live && setD(x), (e) => { console.error(e); if (live) toast(`Something went wrong loading this: ${e}`); });
     return () => { live = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, deps);
   return d;
 }
 
-/** Native <dialog>, opened while mounted. */
+/** Native <dialog>, opened while mounted. Closes on Esc, or a click that starts and ends on the backdrop. */
 export function Dialog({ children, onClose }: { children: ReactNode; onClose: () => void }) {
   const ref = useRef<HTMLDialogElement>(null);
+  const downOutside = useRef(false);
   useEffect(() => { ref.current?.showModal(); }, []);
+  // Clicks in the dialog's own padding also target the <dialog>, so test the position instead.
+  const outside = (e: React.MouseEvent) => {
+    const r = ref.current!.getBoundingClientRect();
+    return e.target === ref.current && (e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom);
+  };
   return (
-    <dialog ref={ref} onClose={onClose} onClick={(e) => e.target === ref.current && onClose()}>
+    <dialog ref={ref} onClose={onClose}
+      onMouseDown={(e) => (downOutside.current = outside(e))}
+      onClick={(e) => { if (downOutside.current && outside(e)) onClose(); }}>
       {children}
     </dialog>
   );
@@ -43,7 +52,8 @@ export const PASTELS = [
 
 export const graphemes = (s: string) => [...new Intl.Segmenter().segment(s)].map((x) => x.segment).filter((x) => x.trim());
 
-export const STICKERS = graphemes("🌸🌷🌼🌻🌹🪷💐🍀🌿🍄🍓🍒🍑🍋🧁🍰🍩🍪🧋🍵🎀💖💗💞💕💌⭐🌟✨🌙☁️🌈🦋🐝🐞🐰🐱🐻🐼🦊🐥🐣🦄🐶🐹🐸🐧📚📖📝✏️🖍️📌📎🔬🧪🧬🧮💡🎓🏆🎧🎨🧸💎👑🫧🕯️🍂🌊🎹🩰🌺");
+// Emoji 12 or older only: newer ones (bubble tea, lotus, bubbles) show as empty boxes on Windows 10.
+export const STICKERS = graphemes("🌸🌷🌼🌻🌹🌺💐🍀🌿🍄🍓🍒🍑🍋🧁🍰🍩🍪🍦🍵🎀💖💗💞💕💌⭐🌟✨🌙☁️🌈🦋🐝🐞🐰🐱🐻🐼🦊🐥🐣🦄🐶🐹🐸🐧📚📖📝✏️🖍️📌📎🔬🧪🧬🧮💡🎓🏆🎧🎨🧸💎👑🕯️🍂🌊🎹🩰🐚");
 
 export function StickerPicker({ value, onChange, max = 3 }: { value: string; onChange: (v: string) => void; max?: number }) {
   const picked = graphemes(value);
@@ -67,6 +77,7 @@ export function imageToDataUrl(file: File, max = 640): Promise<string> {
   return new Promise((res, rej) => {
     const img = new Image();
     img.onload = () => {
+      if (!img.width || !img.height) return img.onerror?.(new Event("error"));
       const k = Math.min(1, max / Math.max(img.width, img.height));
       const c = document.createElement("canvas");
       c.width = img.width * k;
@@ -75,7 +86,7 @@ export function imageToDataUrl(file: File, max = 640): Promise<string> {
       URL.revokeObjectURL(img.src);
       res(c.toDataURL("image/jpeg", 0.85));
     };
-    img.onerror = rej;
+    img.onerror = () => { URL.revokeObjectURL(img.src); rej(new Error("that picture's format can't be opened. Try a JPG or PNG")); };
     img.src = URL.createObjectURL(file);
   });
 }

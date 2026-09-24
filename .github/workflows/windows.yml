@@ -23,6 +23,7 @@ jobs:
           workspaces: src-tauri
       - run: npm ci
       - run: npm run check
+      - run: cargo test --manifest-path src-tauri/Cargo.toml
       - run: npx tauri build
       - uses: actions/upload-artifact@v4
         with:

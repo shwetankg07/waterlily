@@ -35,9 +35,21 @@ const DEFAULT_COLORS: [string, string][] = [
   ["doubt", "#d7c2ff"],
 ];
 
+/** Schema changes after v1, applied in order and tracked with PRAGMA user_version. Only ever append. */
+const MIGRATIONS = [
+  // Set when a file's highlights changed and aren't written into the PDF yet; cleared after a
+  // successful write. Lets a save interrupted by a crash, reload or power cut finish next launch.
+  `ALTER TABLE files ADD COLUMN dirty INT DEFAULT 0`,
+];
+
 export async function openDb() {
   db = await Database.load("sqlite:tbd.db");
   for (const s of SCHEMA) await db.execute(s);
+  const [{ user_version: version }] = await q<{ user_version: number }>(`PRAGMA user_version`);
+  for (let i = version; i < MIGRATIONS.length; i++) {
+    await run(MIGRATIONS[i]);
+    await run(`PRAGMA user_version = ${i + 1}`);
+  }
   const [{ n }] = await q<{ n: number }>(`SELECT count(*) n FROM colors`);
   if (!n) for (const [name, hex] of DEFAULT_COLORS) await run(`INSERT INTO colors(name, hex) VALUES ($1, $2)`, [name, hex]);
 }
@@ -53,8 +65,9 @@ export async function getSetting(k: string): Promise<string | null> {
 export const setSetting = (k: string, v: string) =>
   run(`INSERT INTO settings(k, v) VALUES ($1, $2) ON CONFLICT(k) DO UPDATE SET v=excluded.v`, [k, v]);
 
-/** Local calendar day, YYYY-MM-DD. */
-export const today = (d = new Date()) => d.toLocaleDateString("en-CA");
+/** Local calendar day, YYYY-MM-DD (built by hand: locale date formats differ between engines). */
+export const today = (d = new Date()) =>
+  `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 
 export const logActivity = (fileId: number, f: { seconds?: number; highlights?: number; focus?: number }) =>
   run(
@@ -68,7 +81,7 @@ export interface FileRow {
   id: number; rel: string; size: number; mtime: number; hash: string | null;
   pages: number; last_page: number; max_page: number; thumb: string | null;
   color: string | null; stickers: string; cover: string | null;
-  indexed_mtime: number | null; missing: number; opened_at: number | null;
+  indexed_mtime: number | null; missing: number; opened_at: number | null; dirty: number;
 }
 export interface FolderRow {
   rel: string; color: string | null; stickers: string; cover: string | null;

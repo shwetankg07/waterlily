@@ -46,8 +46,9 @@ export default function App() {
       setReady("ok");
       await startLibrary();
     })().catch((e) => setReady(`The app couldn't start: ${e}`));
-    // Write pending highlights into PDFs before the window closes.
-    const un = getCurrentWindow().onCloseRequested(() => flushSaves());
+    // Write pending highlights into PDFs before the window closes, but never hang the close:
+    // anything unfinished is still marked dirty and completes on the next launch.
+    const un = getCurrentWindow().onCloseRequested(() => Promise.race([flushSaves(), new Promise<void>((r) => setTimeout(r, 8000))]));
     return () => { un.then((f) => f()); };
   }, []);
 

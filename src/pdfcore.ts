@@ -110,6 +110,7 @@ export async function writeHighlights(bytes: Uint8Array, hs: WritableHighlight[]
     const annot = ctx.obj({
       Type: "Annot",
       Subtype: "Highlight",
+      P: page.ref,
       Rect: [x1, y1, x2, y2],
       QuadPoints: quads,
       C: [r, g, b],

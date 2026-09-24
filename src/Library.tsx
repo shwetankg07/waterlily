@@ -1,8 +1,8 @@
 import { useState, type DragEvent, type ReactNode } from "react";
 import { q, run, type FileRow, type FolderRow, type Tag } from "./db";
-import { dirs, parentOf, baseName, displayName, movePath, makeFolder, indexing, getRoot, changed } from "./lib";
+import { dirs, parentOf, baseName, displayName, movePath, makeFolder, indexing, rootName, rootMissing, changed } from "./lib";
 import { useVersion, useData, Dialog, PASTELS, StickerPicker, imageToDataUrl, daysUntil } from "./ui";
-import { sound } from "./fx";
+import { sound, toast } from "./fx";
 import type { Go } from "./App";
 
 type Target = { kind: "folder"; rel: string } | { kind: "file"; file: FileRow };
@@ -16,13 +16,24 @@ export default function Library({ folder, go }: { folder: string; go: Go }) {
 
   const data = useData(async () => {
     const [files, folders, tags, fileTags] = await Promise.all([
-      q<FileRow>(`SELECT id, rel, pages, last_page, max_page, thumb, color, stickers, cover, missing, size, mtime FROM files WHERE missing=0`),
+      // No thumbnails here: they're big, and only the files on screen need them (see `pics`).
+      q<FileRow>(`SELECT id, rel, pages, last_page, max_page, color, stickers, missing, size, mtime FROM files WHERE missing=0`),
       q<FolderRow>(`SELECT * FROM folders`),
       q<Tag>(`SELECT * FROM tags ORDER BY name`),
       q<{ file_id: number; tag_id: number }>(`SELECT * FROM file_tags`),
     ]);
     return { files, folders: new Map(folders.map((f) => [f.rel, f])), tags, fileTags };
   }, [v]);
+  const shownIds = !data ? "" : (tagFilter
+    ? data.files.filter((f) => data.fileTags.some((t) => t.file_id === f.id && t.tag_id === tagFilter))
+    : data.files.filter((f) => parentOf(f.rel) === folder)).map((f) => f.id).join(",");
+  const pics = useData(async () => {
+    const ids = shownIds ? shownIds.split(",").map(Number) : [];
+    if (!ids.length) return new Map<number, string>();
+    const rows = await q<{ id: number; img: string | null }>(
+      `SELECT id, coalesce(cover, thumb) img FROM files WHERE id IN (${ids.map((_, i) => `$${i + 1}`).join(",")})`, ids);
+    return new Map(rows.filter((r) => r.img).map((r) => [r.id, r.img!]));
+  }, [shownIds, v]);
 
   if (!data) return null;
   const kids = dirs.filter((d) => parentOf(d) === folder);
@@ -44,12 +55,18 @@ export default function Library({ folder, go }: { folder: string; go: Go }) {
         <button className="btn" onClick={() => setNewFolder(true)}>New folder</button>
         {indexing.left > 0 && <span className="muted">reading {indexing.left} new PDF{indexing.left > 1 ? "s" : ""}…</span>}
       </div>
+      {rootMissing && (
+        <div className="empty" role="alert">
+          <p className="hand">can't find your notes folder</p>
+          <p className="muted">It may have been moved, renamed, or be on a drive that's unplugged. Plug it back in, or choose it again in Settings.</p>
+        </div>
+      )}
 
       {query.trim() ? <SearchResults query={query} go={go} /> : (
         <>
           <nav className="crumbs" aria-label="Folder path">
             <DropTarget rel="" onGo={() => go({ name: "library", folder: "" })}>
-              <span className="hand" style={{ fontSize: "1.5rem" }}>{baseName(getRoot()) || "Notes"}</span>
+              <span className="hand" style={{ fontSize: "1.5rem" }}>{rootName()}</span>
             </DropTarget>
             {crumbs.map((c, i) => {
               const rel = crumbs.slice(0, i + 1).join("/");
@@ -97,11 +114,11 @@ export default function Library({ folder, go }: { folder: string; go: Go }) {
                 <div key={f.id} className="wrap-rel">
                   <button className="paper" draggable onDragStart={(e) => dragData(e, f.rel, false)}
                     onClick={() => go({ name: "reader", fileId: f.id })}>
-                    <div className="sheet" style={{ backgroundImage: `url(${f.cover ?? f.thumb ?? ""})`, ["--fc" as string]: f.color ?? "transparent" }}>
+                    <div className="sheet" style={{ backgroundImage: pics?.get(f.id) ? `url("${pics.get(f.id)}")` : undefined, ["--fc" as string]: f.color ?? "transparent" }}>
                       <span className="stickers">{f.stickers}</span>
                     </div>
                     <div className="name">{displayName(f.rel)}</div>
-                    {f.pages > 0 && <div className="progress" title={`${Math.round((f.max_page / f.pages) * 100)}% read`}>
+                    {f.pages > 0 && <div className="progress" title={`${Math.min(100, Math.round((f.max_page / f.pages) * 100))}% read`}>
                       <i style={{ width: `${Math.min(100, (f.max_page / f.pages) * 100)}%` }} /></div>}
                     <div className="row" style={{ gap: ".25rem", marginTop: ".3rem" }}>
                       {tagsOf(f.id).map((t) => <span key={t.id} className="chip" style={{ background: t.color }}>#{t.name}</span>)}
@@ -111,7 +128,7 @@ export default function Library({ folder, go }: { folder: string; go: Go }) {
                 </div>
               ))}
             </div>
-          ) : kids.length === 0 && (
+          ) : kids.length === 0 && !rootMissing && (
             <div className="empty">
               <p className="hand">nothing here yet</p>
               <p className="muted">Drop PDFs into this folder on your computer and they'll show up here.</p>
@@ -138,7 +155,7 @@ function useDrop(rel: string) {
     over,
     props: {
       onDragOver: (e: DragEvent) => { if (e.dataTransfer.types.includes("application/x-tbd")) { e.preventDefault(); setOver(true); } },
-      onDragLeave: () => setOver(false),
+      onDragLeave: (e: DragEvent) => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setOver(false); },
       onDrop: async (e: DragEvent) => {
         e.preventDefault();
         setOver(false);
@@ -161,13 +178,16 @@ function Notebook({ rel, meta, onOpen, children }: { rel: string; meta?: FolderR
   return (
     <button className={`nb ${over ? "drop" : ""}`} style={{ ["--c" as string]: meta?.color ?? PASTELS[hash(rel) % PASTELS.length] }}
       draggable onDragStart={(e) => dragData(e, rel, true)} onClick={onOpen} {...props}>
-      {meta?.cover && <span className="cover" style={{ backgroundImage: `url(${meta.cover})` }} />}
+      {meta?.cover && <span className="cover" style={{ backgroundImage: `url("${meta.cover}")` }} />}
       <span className="tape" />
       <span className="stickers">{meta?.stickers}</span>
       <span className="label">{baseName(rel)}{children}</span>
     </button>
   );
 }
+
+/** Characters Windows doesn't allow in file and folder names. */
+const BAD_NAME = /[\\/:*?"<>|]/;
 
 const hash = (s: string) => [...s].reduce((h, c) => (h * 31 + c.charCodeAt(0)) >>> 0, 7);
 
@@ -186,12 +206,16 @@ function Decorate({ target, meta, tags, fileTags, onClose }: {
   const [myTags, setMyTags] = useState(() => new Set(isFolder ? [] : fileTags.filter((t) => t.file_id === target.file.id).map((t) => t.tag_id)));
   const [newTag, setNewTag] = useState("");
 
+  const shownName = isFolder ? baseName(rel) : displayName(rel);
+  const nameOk = !!name.trim() && !BAD_NAME.test(name);
   async function save() {
+    if (!nameOk) return;
     let at = rel;
-    const wanted = isFolder ? name.trim() : name.trim() + ".pdf";
-    if (name.trim() && wanted !== baseName(rel)) {
+    if (name.trim() !== shownName) {
+      const wanted = isFolder ? name.trim() : name.trim() + (rel.match(/\.pdf$/i)?.[0] ?? ".pdf");
       const to = parentOf(rel) ? `${parentOf(rel)}/${wanted}` : wanted;
-      if (await movePath(rel, to, isFolder)) at = to;
+      if (!(await movePath(rel, to, isFolder))) return; // the toast says why; keep the dialog open
+      at = to;
     }
     if (isFolder) {
       await run(`INSERT INTO folders(rel, color, stickers, cover, exam_date, exam_label) VALUES ($1,$2,$3,$4,$5,$6)
@@ -213,7 +237,7 @@ function Decorate({ target, meta, tags, fileTags, onClose }: {
     if (!n) return;
     await run(`INSERT OR IGNORE INTO tags(name, color) VALUES ($1, $2)`, [n, PASTELS[hash(n) % PASTELS.length]]);
     const [t] = await q<Tag>(`SELECT * FROM tags WHERE name=$1`, [n]);
-    tags.push(t);
+    if (!tags.some((x) => x.id === t.id)) tags.push(t);
     setMyTags(new Set([...myTags, t.id]));
     setNewTag("");
   }
@@ -222,7 +246,8 @@ function Decorate({ target, meta, tags, fileTags, onClose }: {
     <Dialog onClose={onClose}>
       <h2 className="hand">Decorate {isFolder ? "notebook" : "page"}</h2>
       <label className="dlg-sec" htmlFor="dname">Name</label>
-      <input id="dname" className="field" value={name} onChange={(e) => setName(e.target.value)} />
+      <input id="dname" className="field" value={name} onChange={(e) => setName(e.target.value)} maxLength={120} />
+      {!nameOk && <p className="muted">{name.trim() ? `Names can't contain \\ / : * ? " < > |` : "Give it a name"}</p>}
 
       <div className="dlg-sec">Color</div>
       <div className="row">
@@ -236,7 +261,11 @@ function Decorate({ target, meta, tags, fileTags, onClose }: {
       <div className="dlg-sec">Cover picture</div>
       <div className="row">
         <label className="btn small">Choose a picture
-          <input type="file" accept="image/*" hidden onChange={async (e) => { const f = e.target.files?.[0]; if (f) setCover(await imageToDataUrl(f)); }} />
+          <input type="file" accept="image/png,image/jpeg,image/webp,image/gif,image/bmp" hidden onChange={async (e) => {
+            const f = e.target.files?.[0];
+            e.target.value = "";
+            if (f) await imageToDataUrl(f).then(setCover, (err) => toast(`Couldn't use that picture: ${err.message ?? err}`));
+          }} />
         </label>
         {cover && <><img src={cover} alt="" style={{ height: 40, borderRadius: 6 }} /><button className="btn small ghost" onClick={() => setCover(null)}>remove</button></>}
       </div>
@@ -265,7 +294,7 @@ function Decorate({ target, meta, tags, fileTags, onClose }: {
 
       <div className="row" style={{ justifyContent: "flex-end", marginTop: "1.4rem" }}>
         <button className="btn ghost" onClick={onClose}>Cancel</button>
-        <button className="btn primary" onClick={save}>Save</button>
+        <button className="btn primary" disabled={!nameOk} onClick={save}>Save</button>
       </div>
     </Dialog>
   );
@@ -273,12 +302,12 @@ function Decorate({ target, meta, tags, fileTags, onClose }: {
 
 function NewFolder({ parent, onClose }: { parent: string; onClose: () => void }) {
   const [name, setName] = useState("");
-  const ok = name.trim() && !/[\\/:*?"<>|]/.test(name);
-  const create = async () => { if (ok) { await makeFolder(parent, name.trim()); sound.pop(); onClose(); } };
+  const ok = !!name.trim() && !BAD_NAME.test(name);
+  const create = async () => { if (ok && (await makeFolder(parent, name.trim()))) { sound.pop(); onClose(); } };
   return (
     <Dialog onClose={onClose}>
       <h2 className="hand">New notebook</h2>
-      <input className="field" autoFocus placeholder="e.g. Organic Chemistry" value={name}
+      <input className="field" autoFocus placeholder="e.g. Organic Chemistry" value={name} maxLength={120}
         onChange={(e) => setName(e.target.value)} onKeyDown={(e) => e.key === "Enter" && create()} aria-label="Folder name" />
       {name && !ok && <p className="muted">Folder names can't contain \ / : * ? " &lt; &gt; |</p>}
       <div className="row" style={{ justifyContent: "flex-end", marginTop: "1rem" }}>
