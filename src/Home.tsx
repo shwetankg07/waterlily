@@ -23,7 +23,7 @@ export default function Home({ go }: { go: Go }) {
   const streak = streakOf(d.days);
 
   return (
-    <div className="page-wrap">
+    <div className="page-wrap home">
       <header className="hello">
         <h1 className="hand"><span className="swipe">{greeting()}{d.name ? `, ${d.name}` : ""}</span> ✿</h1>
         <p className="muted">
@@ -31,23 +31,38 @@ export default function Home({ go }: { go: Go }) {
         </p>
       </header>
 
-      <div className="tiles">
-        <section className="tile">
-          <h3>Continue reading</h3>
-          {d.recent.length ? d.recent.map((f) => (
-            <button key={f.id} className="recent" onClick={() => go({ name: "reader", fileId: f.id })}>
-              <img src={f.cover ?? f.thumb ?? undefined} alt="" />
-              <span className="grow">
-                <b>{displayName(f.rel)}</b>
-                <div className="muted" style={{ fontSize: ".85rem" }}>page {f.last_page}{f.pages ? ` of ${f.pages}` : ""}</div>
-                {f.pages > 0 && <div className="progress"><i style={{ width: `${Math.min(100, (f.max_page / f.pages) * 100)}%` }} /></div>}
-              </span>
-            </button>
-          )) : <p className="muted">PDFs you open will show up here. <button className="btn small" onClick={() => go({ name: "library", folder: "" })}>Open the library</button></p>}
+      <div className="home-grid">
+        <section className="tile reading">
+          <h2 className="hand">Continue reading</h2>
+          {d.recent.length ? (
+            <div className="recent-list">
+              {d.recent.map((f) => (
+                <button key={f.id} className="recent" onClick={() => go({ name: "reader", fileId: f.id })}>
+                  <img src={f.cover ?? f.thumb ?? undefined} alt="" />
+                  <span className="grow">
+                    <b>{displayName(f.rel)}</b>
+                    <div className="muted" style={{ fontSize: ".85rem" }}>page {f.last_page}{f.pages ? ` of ${f.pages}` : ""}</div>
+                    {f.pages > 0 && <div className="progress"><i style={{ width: `${Math.min(100, (f.max_page / f.pages) * 100)}%` }} /></div>}
+                  </span>
+                </button>
+              ))}
+            </div>
+          ) : (
+            <div className="tile-empty">
+              <p className="muted">PDFs you open will show up here.</p>
+              <button className="btn primary" onClick={() => go({ name: "library", folder: "" })}>Open the library</button>
+            </div>
+          )}
         </section>
 
-        <section className="tile">
-          <h3>Exams coming up</h3>
+        <section className="tile garden-tile" onClick={() => go({ name: "garden" })}>
+          <Plant streak={streak} wilting={streak > 0 && !dayCounts(d.days.get(today()))} size={130} />
+          <h2 className="hand">{streak ? `${streak} day streak` : "no streak yet"}</h2>
+          <p className="muted">{dayCounts(d.days.get(today())) ? "Watered today ✓" : "Read 5 minutes or highlight something to water it."}</p>
+        </section>
+
+        <section className="tile exams">
+          <h2 className="hand">Exams coming up</h2>
           {/* Folders deleted or renamed outside the app keep their row; don't count down to them. */}
           {d.exams.some((e) => dirs.includes(e.rel)) ? d.exams.filter((e) => dirs.includes(e.rel)).map((e) => {
             const n = daysUntil(e.exam_date!);
@@ -57,18 +72,11 @@ export default function Home({ go }: { go: Go }) {
                 <b>{n === 0 ? "today!" : n === 1 ? "tomorrow" : `${n} days`}</b>
               </div>
             );
-          }) : <p className="muted">Set an exam date on a folder (the ⋯ button in the Library) to count down to it here.</p>}
+          }) : <p className="muted">Add an exam date to a folder in the Library to count down to it.</p>}
         </section>
 
-        <section className="tile row" style={{ flexWrap: "nowrap", cursor: "pointer" }} onClick={() => go({ name: "garden" })}>
-          <Plant streak={streak} wilting={streak > 0 && !dayCounts(d.days.get(today()))} size={110} />
-          <div>
-            <h3>{streak ? `${streak} day streak` : "no streak yet"}</h3>
-            <p className="muted">{dayCounts(d.days.get(today())) ? "Watered today ✓" : "Read 5 minutes or highlight something to water it."}</p>
-          </div>
-        </section>
+        <StreakGraph days={d.days} />
       </div>
-      <StreakGraph days={d.days} />
     </div>
   );
 }

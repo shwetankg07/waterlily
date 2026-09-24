@@ -99,28 +99,24 @@ export function StreakGraph({ days }: { days: Map<string, Day> }) {
       <div className="row" style={{ justifyContent: "space-between", marginBottom: ".8rem" }}>
         <h2 className="hand">{active} study day{active === 1 ? "" : "s"} this year</h2>
       </div>
-      <div className="row" style={{ alignItems: "flex-start", gap: 0, flexWrap: "nowrap" }}>
-        <div className="graph" style={{ gridTemplateColumns: "auto" }} aria-hidden>
-          <span />
-          {["", "Mon", "", "Wed", "", "Fri", ""].map((d, i) => <span key={i} className="wd">{d}</span>)}
-        </div>
-        <div className="graph" role="img" aria-label={`${active} study days in the last year`}>
-          {weeks.map((wk, w) => {
-            const first = wk.find((d) => d.getDate() === 1);
-            return [
-              <span key={"m" + w} className="m">{first && w < 52 ? MONTHS[first.getMonth()] : ""}</span>,
-              ...wk.map((d) => {
-                const k = today(d);
-                const day = days.get(k);
-                const future = k > t;
-                const mins = Math.round((day?.seconds ?? 0) / 60);
-                const tip = future ? "" : `${d.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" })}: ` +
-                  (day ? `${mins} min reading, ${day.highlights} highlight${day.highlights === 1 ? "" : "s"}${day.focus ? `, ${day.focus} min focus` : ""}` : "no study");
-                return <span key={k} title={tip} className={`cell l${future ? 0 : level(score(day))} ${k === t ? "today" : ""} ${future ? "future" : ""}`} />;
-              }),
-            ];
-          })}
-        </div>
+      <div className="graph" role="img" aria-label={`${active} study days in the last year`}>
+        <span />
+        {["", "Mon", "", "Wed", "", "Fri", ""].map((d, i) => <span key={"wd" + i} className="wd">{d}</span>)}
+        {weeks.map((wk, w) => {
+          const first = wk.find((d) => d.getDate() === 1);
+          return [
+            <span key={"m" + w} className="m">{first && w < 52 ? MONTHS[first.getMonth()] : ""}</span>,
+            ...wk.map((d) => {
+              const k = today(d);
+              const day = days.get(k);
+              const future = k > t;
+              const mins = Math.round((day?.seconds ?? 0) / 60);
+              const tip = future ? "" : `${d.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" })}: ` +
+                (day ? `${mins} min reading, ${day.highlights} highlight${day.highlights === 1 ? "" : "s"}${day.focus ? `, ${day.focus} min focus` : ""}` : "no study");
+              return <span key={k} title={tip} className={`cell l${future ? 0 : level(score(day))} ${k === t ? "today" : ""} ${future ? "future" : ""}`} />;
+            }),
+          ];
+        })}
       </div>
       <div className="legend">less <span className="cell" /> <span className="cell l1" /> <span className="cell l2" /> <span className="cell l3" /> <span className="cell l4" /> more</div>
     </div>
