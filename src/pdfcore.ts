@@ -12,7 +12,11 @@ export interface WritableHighlight {
   note: string;
 }
 
-/** Annotations we write carry this prefix in /NM so we recognise our own on re-read. */
+/**
+ * Annotations we write carry this prefix in /NM so we recognise our own on re-read.
+ * NEVER change it, not even when the app is renamed: highlights already written into
+ * people's PDFs would stop being recognised and get imported a second time.
+ */
 export const NM_PREFIX = "tbd-";
 
 export function hexToRgb(hex: string): [number, number, number] {
