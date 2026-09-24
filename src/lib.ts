@@ -21,7 +21,15 @@ export const getRoot = () => root;
 export const abs = (rel: string) => (rel ? `${root.replace(/[\\/]+$/, "")}/${rel}` : root);
 export const parentOf = (rel: string) => rel.split("/").slice(0, -1).join("/");
 export const baseName = (rel: string) => rel.split("/").pop() ?? rel;
-export const displayName = (rel: string) => baseName(rel).replace(/\.pdf$/i, "");
+const IMAGE = /\.(png|jpe?g|webp|gif|bmp)$/i;
+export const isImage = (rel: string) => IMAGE.test(rel);
+export const extOf = (rel: string) => rel.match(/\.[^./]+$/)?.[0] ?? "";
+export const displayName = (rel: string) => baseName(rel).replace(/\.(pdf|png|jpe?g|webp|gif|bmp)$/i, "");
+/** Blob URL for an image note (caller revokes it). */
+export async function imageUrl(rel: string) {
+  const type = { ".png": "image/png", ".webp": "image/webp", ".gif": "image/gif", ".bmp": "image/bmp" }[extOf(rel).toLowerCase()] ?? "image/jpeg";
+  return URL.createObjectURL(new Blob([(await readBytes(rel)) as BlobPart], { type }));
+}
 /** Last segment of the notes folder path, on any OS ("C:\Users\x\Notes" -> "Notes"). */
 export const rootName = () => root.split(/[\\/]/).filter(Boolean).pop() ?? "Notes";
 /** Set when the notes folder can't be read (moved, renamed, unplugged drive). */
@@ -170,6 +178,7 @@ const textItems = async (doc: pdfjs.PDFDocumentProxy, p: number) =>
   ((await (await doc.getPage(p)).getTextContent()).items.filter((i) => "str" in i) as Items);
 
 async function indexFile(f: FileRow) {
+  if (isImage(f.rel)) return indexImage(f);
   const bytes = await readBytes(f.rel);
   const doc = await openPdf(bytes);
   try {
@@ -192,6 +201,22 @@ async function indexFile(f: FileRow) {
   } finally {
     void doc.loadingTask.destroy();
   }
+}
+
+/** Images: a thumbnail and a hash; there's no text to index and nothing inside to import. */
+async function indexImage(f: FileRow) {
+  const bytes = await readBytes(f.rel);
+  let thumb = f.thumb;
+  if (!thumb) {
+    const bmp = await createImageBitmap(new Blob([bytes as BlobPart]), { resizeWidth: 360, resizeQuality: "medium" });
+    const canvas = document.createElement("canvas");
+    canvas.width = bmp.width;
+    canvas.height = bmp.height;
+    canvas.getContext("2d")!.drawImage(bmp, 0, 0);
+    bmp.close();
+    thumb = canvas.toDataURL("image/jpeg", 0.8);
+  }
+  await run(`UPDATE files SET pages=1, thumb=$2, hash=$3, indexed_mtime=$4 WHERE id=$1`, [f.id, thumb, await sha256(bytes), f.mtime]);
 }
 
 async function renderThumb(doc: pdfjs.PDFDocumentProxy) {
@@ -289,6 +314,8 @@ async function pageCount(bytes: Uint8Array) {
 async function saveNow(fileId: number) {
   const [f] = await q<FileRow>(`SELECT * FROM files WHERE id=$1`, [fileId]);
   if (!f || f.missing || !f.dirty) return;
+  // Image files can't carry highlights inside them; theirs live in the app database only.
+  if (isImage(f.rel)) return void run(`UPDATE files SET dirty=0 WHERE id=$1`, [fileId]);
   try {
     const bytes = await readBytes(f.rel);
     // The write below replaces every highlight in the file, so first take in any that

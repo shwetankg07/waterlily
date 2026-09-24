@@ -42,6 +42,12 @@ fn rel_of(root: &Path, p: &Path) -> String {
         .join("/")
 }
 
+/// PDFs, plus photos/screenshots of notes in formats the webview can show.
+fn is_note(name: &str) -> bool {
+    let n = name.to_lowercase();
+    [".pdf", ".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"].iter().any(|e| n.ends_with(e))
+}
+
 fn walk(root: &Path, dir: &Path, out: &mut Scan) {
     let Ok(rd) = fs::read_dir(dir) else { return };
     for e in rd.flatten() {
@@ -54,7 +60,7 @@ fn walk(root: &Path, dir: &Path, out: &mut Scan) {
         if ft.is_dir() {
             out.dirs.push(rel_of(root, &p));
             walk(root, &p, out);
-        } else if ft.is_file() && name.to_lowercase().ends_with(".pdf") {
+        } else if ft.is_file() && is_note(&name) {
             if let Ok(m) = e.metadata() {
                 out.files.push(Entry { rel: rel_of(root, &p), size: m.len(), mtime: mtime(&m) });
             }
@@ -62,7 +68,7 @@ fn walk(root: &Path, dir: &Path, out: &mut Scan) {
     }
 }
 
-/// Every folder and PDF under `root`, as '/'-separated relative paths. Dotfiles are skipped.
+/// Every folder, PDF and image under `root`, as '/'-separated relative paths. Dotfiles are skipped.
 #[tauri::command]
 fn scan(root: String) -> Result<Scan, String> {
     let root = PathBuf::from(root);

@@ -1,6 +1,6 @@
 import { useState, type DragEvent, type ReactNode } from "react";
 import { q, run, type FileRow, type FolderRow, type Tag } from "./db";
-import { dirs, parentOf, baseName, displayName, movePath, makeFolder, indexing, rootName, rootMissing, changed } from "./lib";
+import { dirs, parentOf, baseName, displayName, extOf, movePath, makeFolder, indexing, rootName, rootMissing, changed } from "./lib";
 import { useVersion, useData, Dialog, PASTELS, StickerPicker, imageToDataUrl, daysUntil } from "./ui";
 import { sound, toast } from "./fx";
 import type { Go } from "./App";
@@ -131,7 +131,7 @@ export default function Library({ folder, go }: { folder: string; go: Go }) {
           ) : kids.length === 0 && !rootMissing && (
             <div className="empty">
               <p className="hand">nothing here yet</p>
-              <p className="muted">Drop PDFs into this folder on your computer and they'll show up here.</p>
+              <p className="muted">Put PDFs or photos of your notes into this folder on your computer and they'll show up here.</p>
             </div>
           )}
         </>
@@ -212,7 +212,7 @@ function Decorate({ target, meta, tags, fileTags, onClose }: {
     if (!nameOk) return;
     let at = rel;
     if (name.trim() !== shownName) {
-      const wanted = isFolder ? name.trim() : name.trim() + (rel.match(/\.pdf$/i)?.[0] ?? ".pdf");
+      const wanted = isFolder ? name.trim() : name.trim() + (extOf(rel) || ".pdf");
       const to = parentOf(rel) ? `${parentOf(rel)}/${wanted}` : wanted;
       if (!(await movePath(rel, to, isFolder))) return; // the toast says why; keep the dialog open
       at = to;

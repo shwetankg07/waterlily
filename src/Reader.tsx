@@ -1,15 +1,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AnnotationMode, TextLayer, type PDFDocumentProxy, type PDFPageProxy, type RenderTask } from "pdfjs-dist/legacy/build/pdf.mjs";
 import { q, run, logActivity, parseHl, colors, type Color, type FileRow, type Highlight, type HighlightRow } from "./db";
-import { readBytes, openPdf, importNew, markDirty, flushSaves, displayName, changed, pdfError } from "./lib";
+import { readBytes, openPdf, importNew, markDirty, flushSaves, displayName, changed, pdfError, isImage } from "./lib";
 import { toPdfRect, toViewBox, mergeLineRects, type Rect } from "./pdfcore";
 import { sound, sparkle, toast } from "./fx";
-import { useVersion } from "./ui";
+import { useVersion, useData } from "./ui";
+import ImageReader from "./ImageReader";
 import type { Go } from "./App";
 
 type Mode = "read" | "quiz" | "collapse";
 type Pending = { x: number; y: number; parts: { page: number; rects: Rect[]; text: string }[] };
-type Active = { id: string; x: number; y: number };
+export type Active = { id: string; x: number; y: number };
 
 /**
  * Our overlay draws highlights, so hide the PDF's own copies of them. Every other annotation
@@ -27,7 +28,14 @@ function hideHighlights(doc: PDFDocumentProxy, page: PDFPageProxy) {
   return p;
 }
 
-export default function Reader({ fileId, page: startPage, go }: { fileId: number; page?: number; go: Go }) {
+/** Opens PDFs in the PDF reader and photos of notes in the image viewer. */
+export default function Reader(props: { fileId: number; page?: number; go: Go }) {
+  const rel = useData(async () => (await q<{ rel: string }>(`SELECT rel FROM files WHERE id=$1`, [props.fileId]))[0]?.rel ?? "", [props.fileId]);
+  if (rel === undefined) return null;
+  return isImage(rel) ? <ImageReader {...props} /> : <PdfReader {...props} />;
+}
+
+function PdfReader({ fileId, page: startPage, go }: { fileId: number; page?: number; go: Go }) {
   const v = useVersion();
   const [file, setFile] = useState<FileRow>();
   const [doc, setDoc] = useState<PDFDocumentProxy>();
@@ -386,7 +394,7 @@ export default function Reader({ fileId, page: startPage, go }: { fileId: number
   );
 }
 
-function HighlightPop({ hl, cols, at, onColor, onNote, onDelete, onClose }: {
+export function HighlightPop({ hl, cols, at, onColor, onNote, onDelete, onClose }: {
   hl: Highlight; cols: Color[]; at: Active; onColor: (c: number) => void; onNote: (n: string) => void; onDelete: () => void; onClose: () => void;
 }) {
   const [note, setNote] = useState(hl.note);
