@@ -7,10 +7,17 @@ export type Rect = [number, number, number, number];
 export interface WritableHighlight {
   id: string;
   page: number; // 1-based
-  rects: Rect[];
+  rects: Rect[]; // for marker strokes: their bounding box
   hex: string;
   note: string;
+  /** Freehand marker: strokes as flat [x, y, x, y, …] lists in PDF space. Absent for text highlights. */
+  ink?: number[][] | null;
+  width?: number | null;
 }
+
+/** Author written on our annotations; pdf.js exposes it (it doesn't expose /NM), so the reader can spot our marker strokes. */
+export const AUTHOR = "Waterlily";
+const textOf = (o: unknown) => (o instanceof PDFString || o instanceof PDFHexString ? o.decodeText() : "");
 
 /**
  * Annotations we write carry this prefix in /NM so we recognise our own on re-read.
@@ -56,9 +63,9 @@ export function mergeLineRects(rects: Rect[]): Rect[] {
 const fmt = (n: number) => (Math.round(n * 1000) / 1000).toString();
 
 /**
- * Replace every /Highlight annotation in the PDF with the given highlights.
- * Foreign highlights must already have been imported (see readHighlights),
- * so dropping them loses nothing. Popups that belonged to dropped highlights go too.
+ * Replace every /Highlight annotation, and our own /Ink marker strokes, with the given ones.
+ * Foreign highlights must already have been imported (see readHighlights), so dropping them
+ * loses nothing. Other apps' ink is left alone. Popups of dropped annotations go too.
  */
 export async function writeHighlights(bytes: Uint8Array, hs: WritableHighlight[]): Promise<Uint8Array> {
   const doc = await PDFDocument.load(bytes, { updateMetadata: false });
@@ -74,9 +81,10 @@ export async function writeHighlights(bytes: Uint8Array, hs: WritableHighlight[]
     const dictOf = (o: unknown) => (o instanceof PDFRef ? ctx.lookup(o) : o);
     for (const o of entries) {
       const d = dictOf(o);
-      if (d instanceof PDFDict && d.get(PDFName.of("Subtype")) === PDFName.of("Highlight")) {
-        dropped.add(String(o));
-      }
+      if (!(d instanceof PDFDict)) continue;
+      const sub = d.get(PDFName.of("Subtype"));
+      const ours = textOf(d.lookup(PDFName.of("NM"))).startsWith(NM_PREFIX);
+      if (sub === PDFName.of("Highlight") || (sub === PDFName.of("Ink") && ours)) dropped.add(String(o));
     }
     for (const o of entries) {
       if (dropped.has(String(o))) continue;
@@ -93,36 +101,46 @@ export async function writeHighlights(bytes: Uint8Array, hs: WritableHighlight[]
     const page = pages[h.page - 1];
     if (!page || !h.rects.length) continue;
     const [r, g, b] = hexToRgb(h.hex);
-    const x1 = Math.min(...h.rects.map((q) => q[0]));
-    const y1 = Math.min(...h.rects.map((q) => q[1]));
-    const x2 = Math.max(...h.rects.map((q) => q[2]));
-    const y2 = Math.max(...h.rects.map((q) => q[3]));
-    // QuadPoints in the de-facto order viewers expect: UL, UR, LL, LR.
-    const quads = h.rects.flatMap(([a, c, d, e]) => [a, e, d, e, a, c, d, c]);
-    const path = h.rects
-      .map(([a, c, d, e]) => `${fmt(a - x1)} ${fmt(c - y1)} ${fmt(d - a)} ${fmt(e - c)} re`)
-      .join(" ");
-    const ap = ctx.register(
-      ctx.stream(`/GS0 gs ${fmt(r)} ${fmt(g)} ${fmt(b)} rg ${path} f`, {
-        Type: "XObject",
-        Subtype: "Form",
-        BBox: [0, 0, x2 - x1, y2 - y1],
-        Matrix: [1, 0, 0, 1, x1, y1],
-        Resources: { ExtGState: { GS0: { Type: "ExtGState", BM: "Multiply" } } },
-      }),
-    );
-    const annot = ctx.obj({
-      Type: "Annot",
-      Subtype: "Highlight",
-      P: page.ref,
-      Rect: [x1, y1, x2, y2],
-      QuadPoints: quads,
-      C: [r, g, b],
-      F: 4,
-      NM: PDFString.of(NM_PREFIX + h.id),
-      M: PDFString.fromDate(now),
-      AP: { N: ap },
-    });
+    const gs = { ExtGState: { GS0: { Type: "ExtGState", BM: "Multiply" } } };
+    let annot: PDFDict;
+    if (h.ink?.length) {
+      // Freehand marker: an /Ink annotation with a round-capped translucent stroke.
+      const w = h.width ?? 12;
+      const xs = h.ink.flatMap((st) => st.filter((_, i) => i % 2 === 0));
+      const ys = h.ink.flatMap((st) => st.filter((_, i) => i % 2 === 1));
+      const x1 = Math.min(...xs) - w / 2, y1 = Math.min(...ys) - w / 2;
+      const x2 = Math.max(...xs) + w / 2, y2 = Math.max(...ys) + w / 2;
+      const path = h.ink.map((st) => {
+        let d = `${fmt(st[0] - x1)} ${fmt(st[1] - y1)} m`;
+        for (let i = 2; i + 1 < st.length; i += 2) d += ` ${fmt(st[i] - x1)} ${fmt(st[i + 1] - y1)} l`;
+        if (st.length === 2) d += ` ${fmt(st[0] - x1 + 0.01)} ${fmt(st[1] - y1)} l`; // a dot
+        return d;
+      }).join(" ");
+      const ap = ctx.register(ctx.stream(`/GS0 gs ${fmt(r)} ${fmt(g)} ${fmt(b)} RG ${fmt(w)} w 1 J 1 j ${path} S`, {
+        Type: "XObject", Subtype: "Form", BBox: [0, 0, x2 - x1, y2 - y1], Matrix: [1, 0, 0, 1, x1, y1], Resources: gs,
+      }));
+      annot = ctx.obj({
+        Type: "Annot", Subtype: "Ink", P: page.ref, Rect: [x1, y1, x2, y2], InkList: h.ink, BS: { W: w },
+        C: [r, g, b], F: 4, NM: PDFString.of(NM_PREFIX + h.id), T: PDFString.of(AUTHOR), M: PDFString.fromDate(now), AP: { N: ap },
+      });
+    } else {
+      const x1 = Math.min(...h.rects.map((q) => q[0]));
+      const y1 = Math.min(...h.rects.map((q) => q[1]));
+      const x2 = Math.max(...h.rects.map((q) => q[2]));
+      const y2 = Math.max(...h.rects.map((q) => q[3]));
+      // QuadPoints in the de-facto order viewers expect: UL, UR, LL, LR.
+      const quads = h.rects.flatMap(([a, c, d, e]) => [a, e, d, e, a, c, d, c]);
+      const path = h.rects
+        .map(([a, c, d, e]) => `${fmt(a - x1)} ${fmt(c - y1)} ${fmt(d - a)} ${fmt(e - c)} re`)
+        .join(" ");
+      const ap = ctx.register(ctx.stream(`/GS0 gs ${fmt(r)} ${fmt(g)} ${fmt(b)} rg ${path} f`, {
+        Type: "XObject", Subtype: "Form", BBox: [0, 0, x2 - x1, y2 - y1], Matrix: [1, 0, 0, 1, x1, y1], Resources: gs,
+      }));
+      annot = ctx.obj({
+        Type: "Annot", Subtype: "Highlight", P: page.ref, Rect: [x1, y1, x2, y2], QuadPoints: quads,
+        C: [r, g, b], F: 4, NM: PDFString.of(NM_PREFIX + h.id), T: PDFString.of(AUTHOR), M: PDFString.fromDate(now), AP: { N: ap },
+      });
+    }
     if (h.note) annot.set(PDFName.of("Contents"), PDFHexString.fromText(h.note));
     const ref = ctx.register(annot);
     const annots = page.node.lookupMaybe(PDFName.of("Annots"), PDFArray);
@@ -139,31 +157,44 @@ export interface ReadHighlight {
   rects: Rect[];
   hex: string;
   note: string;
+  ink?: number[][];
+  width?: number;
 }
 
 export async function readHighlights(bytes: Uint8Array): Promise<ReadHighlight[]> {
   const doc = await PDFDocument.load(bytes, { updateMetadata: false });
+  const ctx = doc.context;
   const out: ReadHighlight[] = [];
   const num = (o: unknown) => (o as { asNumber(): number }).asNumber();
-  const text = (o: unknown) =>
-    o instanceof PDFString || o instanceof PDFHexString ? o.decodeText() : "";
+  const text = textOf;
   doc.getPages().forEach((page, i) => {
     const annots = page.node.lookupMaybe(PDFName.of("Annots"), PDFArray);
     if (!annots) return;
     for (let j = 0; j < annots.size(); j++) {
       const d = annots.lookup(j);
-      if (!(d instanceof PDFDict) || d.get(PDFName.of("Subtype")) !== PDFName.of("Highlight")) continue;
+      if (!(d instanceof PDFDict)) continue;
+      const sub = d.get(PDFName.of("Subtype"));
+      const nm = text(d.lookup(PDFName.of("NM")));
+      const c = d.lookupMaybe(PDFName.of("C"), PDFArray)?.asArray().map(num);
+      const hex = c?.length === 3
+        ? "#" + c.map((v) => Math.round(v * 255).toString(16).padStart(2, "0")).join("")
+        : "#ffeb3b";
+      // Our own marker strokes come back too (e.g. after a reinstall); other apps' ink stays theirs.
+      if (sub === PDFName.of("Ink") && nm.startsWith(NM_PREFIX)) {
+        const ink = (d.lookupMaybe(PDFName.of("InkList"), PDFArray)?.asArray() ?? [])
+          .map((st) => (ctx.lookup(st) as PDFArray).asArray().map(num));
+        const rect = d.lookupMaybe(PDFName.of("Rect"), PDFArray)?.asArray().map(num) as Rect | undefined;
+        const w = (d.lookupMaybe(PDFName.of("BS"), PDFDict)?.lookup(PDFName.of("W")) as { asNumber?: () => number } | undefined)?.asNumber?.() ?? 12;
+        if (ink.length && rect) out.push({ key: nm, ours: true, page: i + 1, rects: [rect], hex, note: text(d.lookup(PDFName.of("Contents"))), ink, width: w });
+        continue;
+      }
+      if (sub !== PDFName.of("Highlight")) continue;
       const qp = d.lookupMaybe(PDFName.of("QuadPoints"), PDFArray);
       const rect = d.lookupMaybe(PDFName.of("Rect"), PDFArray);
       const rects = qp
         ? rectsFromQuads(qp.asArray().map(num))
         : rect ? [rect.asArray().map(num) as Rect] : [];
       if (!rects.length) continue;
-      const c = d.lookupMaybe(PDFName.of("C"), PDFArray)?.asArray().map(num);
-      const hex = c?.length === 3
-        ? "#" + c.map((v) => Math.round(v * 255).toString(16).padStart(2, "0")).join("")
-        : "#ffeb3b";
-      const nm = text(d.lookup(PDFName.of("NM")));
       out.push({
         key: nm || `p${i + 1}:${rects.flat().map(Math.round).join(",")}`,
         ours: nm.startsWith(NM_PREFIX),

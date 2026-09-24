@@ -63,4 +63,34 @@ for (const scale of [0.5, 1, 1.75, 3]) {
 // Span rects on one line merge; separate lines don't.
 assert.deepEqual(mergeLineRects([[10, 100, 50, 112], [52, 100, 90, 112], [10, 80, 40, 92]]), [[10, 100, 90, 112], [10, 80, 40, 92]]);
 
+// Marker strokes: written as our own /Ink, read back with their points, idempotent,
+// and another app's ink drawing on the same page is left alone.
+{
+  const d = await PDFDocument.load(out);
+  const c = d.context, pg = d.getPage(0);
+  const theirs = c.register(c.obj({ Type: "Annot", Subtype: "Ink", Rect: [0, 0, 50, 50], InkList: [[1, 1, 40, 40]], C: [0, 0, 1] }));
+  pg.node.Annots().push(theirs);
+  const withInk = await d.save();
+  const ink = [[100, 300, 140, 310, 180, 305], [120, 280, 160, 285]];
+  const once = await writeHighlights(withInk, [
+    { id: "a1", page: 1, rects: [[100, 100, 200, 120]], hex: "#ffb3cf", note: "" },
+    { id: "m1", page: 1, rects: [[94, 274, 186, 316]], hex: "#a8d8ff", note: "a diagram", ink, width: 12 },
+  ]);
+  const twice = await writeHighlights(once, [{ id: "m1", page: 1, rects: [[94, 274, 186, 316]], hex: "#a8d8ff", note: "a diagram", ink, width: 12 }]);
+  for (const bytes of [once, twice]) {
+    const back = await readHighlights(bytes);
+    const m = back.find((h) => h.key === NM_PREFIX + "m1");
+    assert.ok(m && m.ours, "our marker stroke is read back");
+    assert.deepEqual(m.ink, ink);
+    assert.equal(m.width, 12);
+    assert.equal(m.note, "a diagram");
+    const doc = await PDFDocument.load(bytes);
+    const kinds = doc.getPage(0).node.Annots().asArray().map((r) => doc.context.lookup(r).get(PDFName.of("Subtype")).toString());
+    assert.equal(kinds.filter((k) => k === "/Ink").length, 2, "one marker of ours, one ink drawing of theirs");
+  }
+  const pj = await pdfjs.getDocument({ data: twice.slice() }).promise;
+  const a = (await (await pj.getPage(1)).getAnnotations()).find((x) => x.subtype === "Ink" && x.titleObj?.str === "Waterlily");
+  assert.ok(a, "pdf.js sees our stroke and its author tag (used to avoid drawing it twice)");
+}
+
 console.log("✓ all checks passed");

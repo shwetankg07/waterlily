@@ -4,7 +4,7 @@ import { dirs, displayName, parentOf, isImage } from "./lib";
 import { useData, useVersion } from "./ui";
 import type { Go } from "./App";
 
-interface Row { id: string; file_id: number; page: number; color_id: number; text: string; note: string; created_at: number; rel: string }
+interface Row { id: string; file_id: number; page: number; color_id: number; text: string; note: string; created_at: number; rel: string; inked: number }
 
 export default function Board({ go }: { go: Go }) {
   const v = useVersion();
@@ -14,7 +14,7 @@ export default function Board({ go }: { go: Go }) {
   const [sort, setSort] = useState<"new" | "file">("new");
   const data = useData(async () => ({
     cols: await colors(),
-    rows: await q<Row>(`SELECT h.id, h.file_id, h.page, h.color_id, h.text, h.note, h.created_at, f.rel
+    rows: await q<Row>(`SELECT h.id, h.file_id, h.page, h.color_id, h.text, h.note, h.created_at, f.rel, h.ink IS NOT NULL inked
       FROM highlights h JOIN files f ON f.id = h.file_id WHERE f.missing = 0`),
   }), [v]);
   if (!data) return null;
@@ -53,7 +53,7 @@ export default function Board({ go }: { go: Go }) {
           {rows.map((r) => (
             <button key={r.id} className="sticky" style={{ ["--hc" as string]: hex.get(r.color_id) }}
               onClick={() => go({ name: "reader", fileId: r.file_id, page: r.page })}>
-              <div className="q">{r.text || (isImage(r.rel) ? "✿ a marked area on the photo" : "(highlight)")}</div>
+              <div className="q">{r.text || (r.inked ? "✎ a marker stroke" : isImage(r.rel) ? "✿ a marked area on the photo" : "(highlight)")}</div>
               {r.note && <div className="n">{r.note}</div>}
               <div className="src">{displayName(r.rel)}, p. {r.page}{parentOf(r.rel) && `, in ${parentOf(r.rel)}`}</div>
             </button>

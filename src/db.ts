@@ -40,6 +40,9 @@ const MIGRATIONS = [
   // Set when a file's highlights changed and aren't written into the PDF yet; cleared after a
   // successful write. Lets a save interrupted by a crash, reload or power cut finish next launch.
   `ALTER TABLE files ADD COLUMN dirty INT DEFAULT 0`,
+  // Freehand marker strokes: JSON [[x, y, x, y, …], …] in PDF space, and the pen width in points.
+  `ALTER TABLE highlights ADD COLUMN ink TEXT`,
+  `ALTER TABLE highlights ADD COLUMN width REAL`,
 ];
 
 export async function openDb() {
@@ -91,9 +94,9 @@ export interface Color { id: number; name: string; hex: string }
 export interface Tag { id: number; name: string; color: string }
 export interface HighlightRow {
   id: string; file_id: number; page: number; rects: string; color_id: number;
-  text: string; note: string; created_at: number;
+  text: string; note: string; created_at: number; ink: string | null; width: number | null;
 }
-export interface Highlight extends Omit<HighlightRow, "rects"> { rects: Rect[] }
+export interface Highlight extends Omit<HighlightRow, "rects" | "ink"> { rects: Rect[]; ink: number[][] | null }
 
-export const parseHl = (h: HighlightRow): Highlight => ({ ...h, rects: JSON.parse(h.rects) });
+export const parseHl = (h: HighlightRow): Highlight => ({ ...h, rects: JSON.parse(h.rects), ink: h.ink ? JSON.parse(h.ink) : null });
 export const colors = () => q<Color>(`SELECT * FROM colors ORDER BY id`);

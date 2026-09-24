@@ -410,3 +410,14 @@ select.field option { background: var(--card); color: var(--ink); }
 .imgpage.quiz { cursor: pointer; }
 .imgpage img { display: block; width: 100%; height: 100%; border-radius: 4px; pointer-events: none; }
 .hl-draft { position: absolute; border: 2px dashed var(--accent); background: color-mix(in srgb, var(--accent) 18%, transparent); border-radius: 4px; pointer-events: none; }
+
+/* ---------- reader tools: select, highlighter, marker ---------- */
+.tools { display: flex; align-items: center; gap: .5rem; }
+.tools .seg button { display: grid; place-items: center; padding: .3rem .55rem; color: var(--muted); }
+.tools .seg button[aria-pressed="true"] { color: var(--accent); }
+.pens { display: flex; gap: .3rem; }
+.swatch.small { width: 20px; height: 20px; border-width: 2px; }
+.strokes { position: absolute; left: 0; top: 0; pointer-events: none; mix-blend-mode: multiply; opacity: .9; overflow: visible; }
+.strokes.solid { mix-blend-mode: normal; opacity: 1; }
+.tool-highlight .textLayer, .tool-highlight .textLayer span { cursor: text; }
+.tool-marker .textLayer, .tool-marker .textLayer span { cursor: crosshair; }
