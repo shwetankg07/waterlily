@@ -12,6 +12,25 @@ type Mode = "read" | "quiz" | "collapse";
 type Pending = { x: number; y: number; parts: { page: number; rects: Rect[]; text: string }[] };
 export type Active = { id: string; x: number; y: number };
 
+/** Grow a range to whole words, like a highlighter pen would. Returns true if it changed. */
+const WORD = /[\p{L}\p{N}'’_-]/u;
+function snapToWords(range: Range) {
+  const { startContainer: sc, endContainer: ec, startOffset: so, endOffset: eo } = range;
+  if (sc.nodeType === Node.TEXT_NODE) {
+    const t = sc.textContent ?? "";
+    let i = so;
+    while (i > 0 && WORD.test(t[i - 1])) i--;
+    range.setStart(sc, i);
+  }
+  if (ec.nodeType === Node.TEXT_NODE) {
+    const t = ec.textContent ?? "";
+    let i = eo;
+    while (i < t.length && WORD.test(t[i])) i++;
+    range.setEnd(ec, i);
+  }
+  return range.startOffset !== so || range.endOffset !== eo;
+}
+
 /**
  * Our overlay draws highlights, so hide the PDF's own copies of them. Every other annotation
  * (a professor's ink, stamps, comments) still renders with the page.
@@ -203,7 +222,10 @@ function PdfReader({ fileId, page: startPage, go }: { fileId: number; page?: num
   function offerSelection() {
     const sel = getSelection();
     if (!sel || sel.isCollapsed || mode !== "read" || !scroller.current?.contains(sel.anchorNode)) return;
-    const range = sel.getRangeAt(0);
+    const range = sel.getRangeAt(0).cloneRange();
+    // Show the whole-word selection she'll get. Only touch it when it changed: setting the
+    // selection fires selectionchange, which calls back in here.
+    if (snapToWords(range)) { sel.removeAllRanges(); sel.addRange(range); }
     const all = [...range.getClientRects()].filter((r) => r.width > 1 && r.height > 1);
     if (!all.length) return;
     const hs = all.map((r) => r.height).sort((a, b) => a - b);

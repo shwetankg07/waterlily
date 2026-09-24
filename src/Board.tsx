@@ -53,7 +53,7 @@ export default function Board({ go }: { go: Go }) {
           {rows.map((r) => (
             <button key={r.id} className="sticky" style={{ ["--hc" as string]: hex.get(r.color_id) }}
               onClick={() => go({ name: "reader", fileId: r.file_id, page: r.page })}>
-              <div>{r.text || (isImage(r.rel) ? "✿ a marked area on the photo" : "(highlight)")}</div>
+              <div className="q">{r.text || (isImage(r.rel) ? "✿ a marked area on the photo" : "(highlight)")}</div>
               {r.note && <div className="n">{r.note}</div>}
               <div className="src">{displayName(r.rel)}, p. {r.page}{parentOf(r.rel) && `, in ${parentOf(r.rel)}`}</div>
             </button>

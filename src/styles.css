@@ -289,16 +289,26 @@ dialog h2 { margin-bottom: .8rem; }
 .crop-meta { display: flex; justify-content: space-between; gap: 1rem; font-size: .85rem; margin-top: .3rem; }
 
 /* ---------- board: highlights as sticky notes ---------- */
-.board { columns: 280px; column-gap: 1.1rem; }
+/* Highlights as clean glass cards: a strip of the highlight color, a faint tint, no tilts. */
+.board { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 1rem; align-items: start; }
 .sticky {
-  break-inside: avoid; margin: 0 0 1.1rem; padding: .9rem 1rem .8rem; border-radius: 3px 3px 14px 3px;
-  background: color-mix(in srgb, var(--hc) 38%, var(--card)); box-shadow: var(--shadow); cursor: pointer;
-  display: block; width: 100%; text-align: left; border: 0; color: var(--ink);
+  display: grid; gap: .45rem; width: 100%; text-align: left; cursor: pointer; color: var(--ink);
+  padding: 1rem 1.1rem 1rem 1.25rem; border-radius: 16px; border: 1px solid var(--glass-line);
+  background: linear-gradient(90deg, var(--hc) 0 5px, transparent 5px), color-mix(in srgb, var(--hc) 10%, var(--glass));
+  backdrop-filter: blur(10px) saturate(1.2); -webkit-backdrop-filter: blur(10px) saturate(1.2);
+  box-shadow: 0 18px 40px -30px rgb(0 0 0 / .45);
+  transition: transform .2s cubic-bezier(.22, 1, .36, 1), border-color .2s;
 }
-.sticky:nth-child(3n) { transform: rotate(.6deg); }
-.sticky:nth-child(4n+1) { transform: rotate(-.5deg); }
-.sticky .src { font-size: .78rem; font-weight: 800; color: var(--muted); margin-top: .5rem; }
-.sticky .n { font-family: "Fraunces Variable", Georgia, serif; font-style: italic; font-size: 1.02rem; }
+.sticky:hover { transform: translateY(-2px); border-color: color-mix(in srgb, var(--hc) 60%, transparent); }
+.sticky .q { font-size: .98rem; line-height: 1.5; }
+.sticky .src { font-size: .78rem; font-weight: 600; color: var(--muted); overflow-wrap: anywhere; }
+.sticky .n { font-family: "Fraunces Variable", Georgia, serif; font-style: italic; font-size: 1.02rem; color: var(--muted); }
+/* native selects follow the theme */
+select.field {
+  appearance: none; -webkit-appearance: none; padding-right: 2.2rem; cursor: pointer;
+  background: color-mix(in srgb, var(--card) 75%, transparent) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' fill='none' stroke='%23d8638a' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m1 1.5 5 5 5-5'/%3E%3C/svg%3E") no-repeat right .9rem center;
+}
+select.field option { background: var(--card); color: var(--ink); }
 
 /* ---------- home ---------- */
 .hello { margin: .5rem 0 1.8rem; }
