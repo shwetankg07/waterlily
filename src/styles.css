@@ -185,7 +185,8 @@ dialog h2 { margin-bottom: .8rem; }
 .seg button[aria-pressed="true"] { background: var(--card); box-shadow: var(--shadow); }
 .rbody { display: grid; grid-template-columns: 1fr 300px; min-height: 0; }
 .rbody.nopanel { grid-template-columns: 1fr; }
-.pages { overflow: auto; padding: 1.5rem 1rem 4rem; }
+.pages { overflow: auto; padding: 1.5rem 1rem 4rem; touch-action: pan-x pan-y; }
+.pages.pen-near { touch-action: none; } /* stylus in use: the palm can't scroll, the pen can select */
 .pdfpage {
   position: relative; margin: 0 auto 1.2rem; background: #fff; box-shadow: var(--shadow); border-radius: 2px;
   --scale-round-x: 1px; --scale-round-y: 1px; --user-unit: 1;

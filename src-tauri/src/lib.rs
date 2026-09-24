@@ -123,7 +123,8 @@ fn write_pdf(app: AppHandle, req: Request) -> Result<u64, String> {
 
 #[tauri::command]
 fn move_path(from: String, to: String) -> Result<(), String> {
-    if Path::new(&to).exists() {
+    // Case-only renames ("notes.pdf" -> "Notes.pdf") hit the same file on Windows; allow them.
+    if Path::new(&to).exists() && !from.eq_ignore_ascii_case(&to) {
         return Err("something with that name is already there".into());
     }
     fs::rename(from, to).map_err(|e| e.to_string())

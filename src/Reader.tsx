@@ -119,16 +119,55 @@ export default function Reader({ fileId, page: startPage, go }: { fileId: number
 
   // ---------- creating highlights ----------
 
-  function onMouseUp(e: React.MouseEvent) {
+  // Palm rejection: while a stylus is near or was just used, finger/palm touches can't tap highlights or
+  // start selections, and the page stops panning under the palm (see .pen-near in styles.css).
+  const penAt = useRef(0);
+  const penTimer = useRef(0);
+  const pointerDown = useRef(false);
+  const downWasPalm = useRef(false);
+  const isPalm = (e: React.PointerEvent) =>
+    e.pointerType === "touch" && (e.width * e.height > 40 * 40 || Date.now() - penAt.current < 1500);
+  function markPen(e: React.PointerEvent) {
+    if (e.pointerType !== "pen") return;
+    penAt.current = Date.now();
+    scroller.current?.classList.add("pen-near");
+    clearTimeout(penTimer.current);
+    penTimer.current = window.setTimeout(() => scroller.current?.classList.remove("pen-near"), 1500);
+  }
+  function onPointerDown(e: React.PointerEvent) {
+    markPen(e);
+    pointerDown.current = true;
+    downWasPalm.current = isPalm(e);
+    lastInput.current = Date.now();
+  }
+  function onPointerUp(e: React.PointerEvent) {
+    markPen(e);
+    pointerDown.current = false;
+    if (downWasPalm.current) return;
+    offerSelection();
+  }
+
+  // Touch long-press selection and keyboard selection finish without a pointerup on the page.
+  useEffect(() => {
+    let t = 0;
+    const f = () => {
+      clearTimeout(t);
+      t = window.setTimeout(() => { if (!pointerDown.current) offerSelection(); }, 350);
+    };
+    document.addEventListener("selectionchange", f);
+    return () => { clearTimeout(t); document.removeEventListener("selectionchange", f); };
+  });
+
+  function offerSelection() {
     const sel = getSelection();
-    if (!sel || sel.isCollapsed || mode !== "read") return;
+    if (!sel || sel.isCollapsed || mode !== "read" || !scroller.current?.contains(sel.anchorNode)) return;
     const range = sel.getRangeAt(0);
     const all = [...range.getClientRects()].filter((r) => r.width > 1 && r.height > 1);
     if (!all.length) return;
     const hs = all.map((r) => r.height).sort((a, b) => a - b);
     const median = hs[hs.length >> 1];
     const parts: Pending["parts"] = [];
-    for (const el of scroller.current!.querySelectorAll<HTMLElement>("[data-page]")) {
+    for (const el of scroller.current.querySelectorAll<HTMLElement>("[data-page]")) {
       const box = el.getBoundingClientRect();
       const n = Number(el.dataset.page);
       const vp = pages[n - 1].getViewport({ scale });
@@ -143,8 +182,7 @@ export default function Reader({ fileId, page: startPage, go }: { fileId: number
     if (parts.length === 1) parts[0].text = sel.toString().replace(/\s+/g, " ").trim();
     const last = all[all.length - 1];
     setActive(null);
-    setPending({ x: Math.min(last.right, innerWidth - 220), y: last.bottom + 8, parts });
-    void e;
+    setPending({ x: Math.min(last.right, innerWidth - 220), y: Math.min(last.bottom + 8, innerHeight - 60), parts });
   }
 
   async function createHighlight(colorId: number, at?: { x: number; y: number }) {
@@ -184,7 +222,8 @@ export default function Reader({ fileId, page: startPage, go }: { fileId: number
   // ---------- clicking existing highlights (hit-test; highlights sit under the text layer) ----------
 
   function onPageClick(e: React.MouseEvent, n: number) {
-    if (getSelection()?.isCollapsed === false) return;
+    if (downWasPalm.current || getSelection()?.isCollapsed === false) return;
+    setPending(null);
     const box = (e.currentTarget as HTMLElement).getBoundingClientRect();
     const [x, y] = pages[n - 1].getViewport({ scale }).convertToPdfPoint(e.clientX - box.left, e.clientY - box.top);
     const hit = hls.find((h) => h.page === n && h.rects.some(([a, b, c, d]) => x >= a && x <= c && y >= b && y <= d));
@@ -248,7 +287,9 @@ export default function Reader({ fileId, page: startPage, go }: { fileId: number
             <Collapsed pages={pages} hls={hls} colorOf={colorOf} onOpen={(n) => { setMode("read"); requestAnimationFrame(() => scrollToPage(n, false)); }} />
           </div>
         ) : (
-          <div className={`pages ${mode === "quiz" ? "cloze" : ""}`} ref={scroller} onScroll={onScroll} onMouseUp={onMouseUp}
+          <div className={`pages ${mode === "quiz" ? "cloze" : ""}`} ref={scroller} onScroll={onScroll}
+            onPointerDown={onPointerDown} onPointerUp={onPointerUp} onPointerMove={markPen}
+            onPointerCancel={() => (pointerDown.current = false)}
             onWheel={(e) => { if (e.ctrlKey) { e.preventDefault(); zoom(e.deltaY < 0 ? 1.1 : 1 / 1.1); } }}>
             {doc && scale > 0 && pages.map((p, i) => (
               <PdfPage key={i} page={p} n={i + 1} scale={scale} root={scroller}
@@ -386,7 +427,7 @@ function Collapsed({ pages, hls, colorOf, onOpen }: { pages: PDFPageProxy[]; hls
     return () => ro.disconnect();
   }, [hls.length > 0]);
   useEffect(() => () => { for (const p of images.current.values()) p.then(URL.revokeObjectURL); }, []);
-  const imageOf = (n: number) => {
+  const imageOf = useCallback((n: number) => {
     if (!images.current.has(n)) images.current.set(n, (async () => {
       const p = pages[n - 1];
       const vp = p.getViewport({ scale: CROP_W / p.getViewport({ scale: 1 }).width * (devicePixelRatio || 1) });
@@ -396,7 +437,7 @@ function Collapsed({ pages, hls, colorOf, onOpen }: { pages: PDFPageProxy[]; hls
       return URL.createObjectURL(await new Promise<Blob>((r) => c.toBlob((b) => r(b!), "image/jpeg", 0.9)));
     })());
     return images.current.get(n)!;
-  };
+  }, [pages]);
   const sorted = [...hls].sort((a, b) => a.page - b.page || Math.max(...b.rects.map((r) => r[3])) - Math.max(...a.rects.map((r) => r[3])));
   if (!sorted.length) return <div className="empty"><p className="hand">no highlights yet</p><p className="muted">Highlights you make in Read mode show up here, without the rest of the page.</p></div>;
   return <div className="collapse-list" ref={list}>{sorted.map((h) => <Crop key={h.id} h={h} w={w} page={pages[h.page - 1]} hex={colorOf.get(h.color_id) ?? "#ffe680"} imageOf={imageOf} onOpen={onOpen} />)}</div>;
