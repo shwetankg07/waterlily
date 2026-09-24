@@ -1,0 +1,34 @@
+name: Windows installer
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - run: npm ci
+      - run: npm run check
+      - run: npx tauri build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: setup-exe
+          path: src-tauri/target/release/bundle/nsis/*-setup.exe
+      - if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: src-tauri/target/release/bundle/nsis/*-setup.exe
