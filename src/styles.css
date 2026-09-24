@@ -1,46 +1,87 @@
 /* ---------- themes: each is a stationery set ---------- */
-:root, [data-theme="strawberry"] {
-  --paper: #fff5f8; --card: #ffffff; --ink: #4a3340; --muted: #9b7f8c;
-  --accent: #ff7eb3; --accent-soft: #ffd3e5; --line: #f3d9e3; --dot: #f1cfdc;
-  --shadow: 0 1px 0 #f3d9e3, 0 8px 22px -12px rgb(122 50 86 / .35);
+/* Every theme is a pink: she asked for everything in pink. Ids stay stable for saved settings.
+   Glass surfaces and the default palette follow Bloom (letsgetbetter). */
+:root, [data-theme="strawberry"] { /* Rose (Bloom's palette) */
+  --paper: #fdf4f6; --card: #ffffff; --ink: #46232f; --muted: #8a5d6b;
+  --accent: #d8638a; --accent-soft: #f9cdd9; --line: #f3d3dd; --dot: #fce4ea;
+  --wash1: #ffe3ee; --wash2: #fbdce8; --wash3: #f6e6ec;
+  --glass: rgb(255 255 255 / .45); --glass-line: rgb(216 99 138 / .16);
+  --shadow: 0 1px 1px rgb(216 99 138 / .04), 0 18px 40px -26px rgb(216 99 138 / .45);
   color-scheme: light;
 }
-[data-theme="lavender"] {
-  --paper: #f8f5ff; --card: #ffffff; --ink: #3d3552; --muted: #8a80a3;
-  --accent: #a98bff; --accent-soft: #e4dafe; --line: #e6def8; --dot: #ddd2f7;
-  --shadow: 0 1px 0 #e6def8, 0 8px 22px -12px rgb(70 50 130 / .35);
+[data-theme="lavender"] { /* Bubblegum */
+  --paper: #fff0fa; --card: #fffafd; --ink: #5c1f4a; --muted: #b46a9c;
+  --accent: #ff5cb8; --accent-soft: #ffc6e8; --line: #fcd6ee; --dot: #f9bfe2;
+  --wash1: #ffd6ef; --wash2: #ffe0f3; --wash3: #fbe9f4;
+  --glass: rgb(255 255 255 / .45); --glass-line: rgb(255 92 184 / .16);
+  --shadow: 0 1px 0 #fcd6ee, 0 8px 22px -12px rgb(180 30 120 / .35);
 }
-[data-theme="matcha"] {
-  --paper: #f4faf3; --card: #ffffff; --ink: #33443a; --muted: #7c9384;
-  --accent: #6cc58f; --accent-soft: #d3f0dc; --line: #dcebdc; --dot: #cfe5d2;
-  --shadow: 0 1px 0 #dcebdc, 0 8px 22px -12px rgb(40 90 60 / .3);
+[data-theme="matcha"] { /* Cherry blossom */
+  --paper: #fff7f9; --card: #ffffff; --ink: #5b3040; --muted: #b0848f;
+  --accent: #f48fb1; --accent-soft: #fde0ea; --line: #f8e1e9; --dot: #f6d3df;
+  --wash1: #ffe6ee; --wash2: #fde0ea; --wash3: #fbeef2;
+  --glass: rgb(255 255 255 / .45); --glass-line: rgb(244 143 177 / .2);
+  --shadow: 0 1px 0 #f8e1e9, 0 8px 22px -12px rgb(160 70 100 / .3);
 }
-[data-theme="peach"] {
-  --paper: #fff7f0; --card: #ffffff; --ink: #4d3a30; --muted: #a08576;
-  --accent: #ff9f6e; --accent-soft: #ffe0cc; --line: #f5e0d2; --dot: #f2d4c0;
-  --shadow: 0 1px 0 #f5e0d2, 0 8px 22px -12px rgb(130 70 40 / .3);
+[data-theme="peach"] { /* Rose gold */
+  --paper: #fff4f2; --card: #fffaf9; --ink: #5a2f36; --muted: #b0808a;
+  --accent: #e8798f; --accent-soft: #fbd5dc; --line: #f6dde0; --dot: #f2cfd4;
+  --wash1: #ffe2e2; --wash2: #fbd5dc; --wash3: #f8e7e6;
+  --glass: rgb(255 255 255 / .45); --glass-line: rgb(232 121 143 / .18);
+  --shadow: 0 1px 0 #f6dde0, 0 8px 22px -12px rgb(150 60 75 / .3);
 }
-[data-theme="midnight"] {
-  --paper: #211a24; --card: #2c2330; --ink: #f6e7ef; --muted: #b49bab;
-  --accent: #ff8fc1; --accent-soft: #5a3350; --line: #3d3142; --dot: #362b3a;
-  --shadow: 0 1px 0 #3d3142, 0 10px 24px -12px rgb(0 0 0 / .6);
+[data-theme="midnight"] { /* Midnight rose */
+  --paper: #2a1622; --card: #3a1f30; --ink: #ffe6f1; --muted: #d59bb8;
+  --accent: #ff7cb5; --accent-soft: #6a2d52; --line: #4d2940; --dot: #43233a;
+  --wash1: #3d1a2e; --wash2: #341727; --wash3: #2f1524;
+  --glass: rgb(58 31 48 / .55); --glass-line: rgb(255 124 181 / .18);
+  --shadow: 0 1px 0 #4d2940, 0 10px 24px -12px rgb(0 0 0 / .6);
   color-scheme: dark;
 }
 
 * { box-sizing: border-box; }
 html, body, #root { height: 100%; margin: 0; }
 body {
-  font: 15px/1.5 "Nunito Variable", "Segoe UI", system-ui, sans-serif;
+  font: 15px/1.5 "Plus Jakarta Sans Variable", "Segoe UI", system-ui, sans-serif;
+  letter-spacing: -0.006em;
   color: var(--ink);
-  background: var(--paper) radial-gradient(var(--dot) 1.1px, transparent 1.3px) 0 0 / 22px 22px;
+  background:
+    radial-gradient(120% 80% at 50% -10%, var(--wash1) 0%, transparent 55%),
+    radial-gradient(90% 70% at 100% 110%, var(--wash2) 0%, transparent 50%),
+    radial-gradient(70% 60% at 0% 100%, var(--wash3) 0%, transparent 55%),
+    var(--paper);
   -webkit-font-smoothing: antialiased;
+}
+/* Bloom's frosted glass: translucent so the pink wash and petals glow through. */
+/* `html` prefix: beats the plain component rules further down that set their own background. */
+html :is(.glass, .tile, .stat, .graph-card, .timer, .result, .pop, dialog, .onboard .card, .theme-pick, .rbar, .panel) {
+  background: var(--glass);
+  backdrop-filter: blur(10px) saturate(1.2);
+  -webkit-backdrop-filter: blur(10px) saturate(1.2);
+  border: 1px solid var(--glass-line);
+  box-shadow: var(--shadow);
+}
+em { font-family: "Fraunces Variable", Georgia, serif; font-style: italic; font-weight: 500; }
+
+/* Drifting petals behind everything (not in the reader). */
+.petals { position: fixed; inset: 0; z-index: -1; overflow: hidden; pointer-events: none; }
+.petal {
+  position: absolute; top: -5vh; border-radius: 100% 0 100% 0;
+  background: linear-gradient(135deg, #ef93b4, #c0356b); box-shadow: 0 0 14px rgb(192 53 107 / .35);
+  animation: petal-fall linear infinite; will-change: transform, opacity;
+}
+@keyframes petal-fall {
+  0% { transform: translateY(-8vh) translateX(0) rotate(0deg); opacity: 0; }
+  10%, 90% { opacity: 1; }
+  100% { transform: translateY(108vh) translateX(8vw) rotate(360deg); opacity: 0; }
 }
 button, input, textarea, select { font: inherit; color: inherit; }
 :focus-visible { outline: 2.5px solid var(--accent); outline-offset: 2px; border-radius: 6px; }
-.hand { font-family: "Caveat Variable", "Segoe Print", cursive; font-weight: 600; }
-h1, h2, h3 { margin: 0; font-weight: 800; }
-h1.hand { font-size: 2.6rem; line-height: 1.05; }
-h2.hand { font-size: 1.9rem; }
+/* Bloom's romantic serif italic for headings and notes. */
+.hand { font-family: "Fraunces Variable", Georgia, serif; font-style: italic; font-weight: 500; letter-spacing: -0.018em; }
+h1, h2, h3 { margin: 0; font-weight: 700; }
+h1.hand { font-size: 2.4rem; line-height: 1.1; }
+h2.hand { font-size: 1.5rem; }
 .muted { color: var(--muted); }
 .row { display: flex; gap: .6rem; align-items: center; flex-wrap: wrap; }
 .grow { flex: 1; }
@@ -56,33 +97,37 @@ h2.hand { font-size: 1.9rem; }
 .app { display: grid; grid-template-columns: 216px 1fr; height: 100%; }
 .side {
   display: flex; flex-direction: column; gap: .2rem; padding: 1.2rem .9rem;
-  background: color-mix(in srgb, var(--card) 70%, transparent); border-right: 1.5px dashed var(--line);
+  background: var(--glass); backdrop-filter: blur(10px) saturate(1.2); -webkit-backdrop-filter: blur(10px) saturate(1.2);
+  border-right: 1px solid var(--glass-line);
 }
-.logo { font-size: 2.1rem; padding: 0 .5rem .8rem; }
+/* Wordmark in Italiana, like Bloom's title. */
+.logo { font-family: "Italiana", "Fraunces Variable", serif; font-style: normal; font-size: 2rem; letter-spacing: .04em; padding: 0 .5rem .9rem; }
 .nav {
   display: flex; align-items: center; gap: .6rem; padding: .5rem .7rem; border: 0; background: none;
   border-radius: 12px; cursor: pointer; text-align: left; font-weight: 700; color: var(--muted);
 }
 .nav:hover { color: var(--ink); }
 .nav[aria-current="page"] { color: var(--ink); }
-.nav .ico { width: 1.4rem; text-align: center; }
+.nav .ico { width: 1.4rem; display: grid; place-items: center; color: var(--accent); }
 .side-foot { margin-top: auto; display: grid; gap: .7rem; min-width: 0; }
 main { overflow: auto; position: relative; }
 .page-wrap { padding: 2rem 2.4rem 4rem; max-width: 1180px; }
 
 /* ---------- controls ---------- */
 .btn {
-  border: 1.5px solid var(--line); background: var(--card); padding: .45rem .95rem; border-radius: 999px;
-  cursor: pointer; font-weight: 700; transition: transform .12s, background .12s;
+  border: 1px solid var(--glass-line); background: var(--glass); padding: .45rem .95rem; border-radius: 14px;
+  cursor: pointer; font-weight: 600;
+  transition: transform .18s cubic-bezier(.32, .72, 0, 1), box-shadow .18s ease, background .25s ease;
 }
 .btn:hover { background: var(--accent-soft); }
-.btn:active { transform: scale(.96); }
-.btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.btn:active { transform: scale(.97); }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; box-shadow: 0 10px 22px -12px var(--accent); }
+.btn.primary:hover { background: color-mix(in srgb, var(--accent) 80%, #fff); }
 .btn.ghost { border-color: transparent; background: none; }
 .btn.small { padding: .2rem .6rem; font-size: .85rem; }
 .btn[aria-pressed="true"] { background: var(--accent-soft); border-color: var(--accent); }
 .field {
-  border: 1.5px solid var(--line); background: var(--card); border-radius: 12px; padding: .5rem .8rem; width: 100%;
+  border: 1px solid var(--glass-line); background: color-mix(in srgb, var(--card) 75%, transparent); border-radius: 12px; padding: .5rem .8rem; width: 100%;
 }
 .field:focus { outline: none; border-color: var(--accent); }
 .chip {
@@ -97,8 +142,8 @@ main { overflow: auto; position: relative; }
 .swatch[aria-pressed="true"] { box-shadow: 0 0 0 2.5px var(--ink); }
 
 dialog {
-  border: 0; border-radius: 22px; padding: 1.5rem; background: var(--card); color: var(--ink);
-  box-shadow: 0 30px 80px -20px rgb(0 0 0 / .35); width: min(520px, 92vw);
+  border-radius: 22px; padding: 1.5rem; color: var(--ink); width: min(520px, 92vw);
+  background: color-mix(in srgb, var(--card) 85%, transparent);
 }
 dialog::backdrop { background: rgb(40 20 30 / .25); backdrop-filter: blur(3px); }
 dialog h2 { margin-bottom: .8rem; }
@@ -231,11 +276,11 @@ dialog h2 { margin-bottom: .8rem; }
 .panel { border-left: 1.5px dashed var(--line); overflow: auto; padding: 1rem; background: color-mix(in srgb, var(--card) 60%, transparent); }
 .note-card {
   display: block; width: 100%; text-align: left; border: 0; cursor: pointer; margin-bottom: .7rem;
-  padding: .65rem .8rem; border-radius: 4px 14px 14px 4px; background: var(--card); box-shadow: var(--shadow);
+  padding: .65rem .8rem; border-radius: 4px 14px 14px 4px; background: var(--glass); box-shadow: var(--shadow);
   border-left: 6px solid var(--hc);
 }
 .note-card .q { display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; }
-.note-card .n { font-family: "Caveat Variable", cursive; font-size: 1.15rem; margin-top: .2rem; color: var(--muted); }
+.note-card .n { font-family: "Fraunces Variable", Georgia, serif; font-style: italic; font-size: 1rem; margin-top: .2rem; color: var(--muted); }
 
 .collapse-list { max-width: 900px; margin: 0 auto; display: grid; gap: 1rem; }
 .crop { position: relative; overflow: hidden; background: #fff; border-radius: 10px; box-shadow: var(--shadow); cursor: pointer; }
@@ -253,7 +298,7 @@ dialog h2 { margin-bottom: .8rem; }
 .sticky:nth-child(3n) { transform: rotate(.6deg); }
 .sticky:nth-child(4n+1) { transform: rotate(-.5deg); }
 .sticky .src { font-size: .78rem; font-weight: 800; color: var(--muted); margin-top: .5rem; }
-.sticky .n { font-family: "Caveat Variable", cursive; font-size: 1.2rem; }
+.sticky .n { font-family: "Fraunces Variable", Georgia, serif; font-style: italic; font-size: 1.02rem; }
 
 /* ---------- home ---------- */
 .hello { margin: .5rem 0 1.8rem; }
@@ -302,7 +347,7 @@ dialog h2 { margin-bottom: .8rem; }
 .onboard .card { background: var(--card); border-radius: 26px; padding: 2.4rem; box-shadow: var(--shadow); width: min(560px, 100%); }
 .themes { display: grid; grid-template-columns: repeat(auto-fill, minmax(92px, 1fr)); gap: .7rem; }
 .theme-pick { border: 2.5px solid transparent; border-radius: 16px; padding: .6rem; cursor: pointer; font-weight: 800; font-size: .85rem; }
-.theme-pick[aria-pressed="true"] { border-color: var(--ink); }
+.theme-pick[aria-pressed="true"] { outline: 2.5px solid var(--accent); outline-offset: 2px; }
 .theme-pick i { display: block; height: 34px; border-radius: 10px; margin-bottom: .4rem; }
 
 /* ---------- toasts & sparkles ---------- */

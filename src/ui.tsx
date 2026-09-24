@@ -45,9 +45,10 @@ export function Dialog({ children, onClose }: { children: ReactNode; onClose: ()
   );
 }
 
+// Notebook and tag colors: ten pinks, from blush to raspberry.
 export const PASTELS = [
-  "#ffd3e5", "#ffc4c4", "#ffe0b8", "#fff1a8", "#d6f5c3",
-  "#c3efe4", "#c9e6ff", "#d8d4ff", "#ecd4ff", "#f0e4da",
+  "#ffe4ef", "#ffd3e5", "#ffc4dc", "#ffb3d1", "#ff9fc6",
+  "#fbc6d8", "#f8b4c9", "#f6c1cf", "#ffcfe0", "#f4a7c4",
 ];
 
 export const graphemes = (s: string) => [...new Intl.Segmenter().segment(s)].map((x) => x.segment).filter((x) => x.trim());

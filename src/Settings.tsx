@@ -7,11 +7,11 @@ import { prefs, toast, sound } from "./fx";
 import { useData, useVersion } from "./ui";
 
 export const THEMES: [id: string, name: string, colors: string][] = [
-  ["strawberry", "Strawberry milk", "#ffd3e5, #ff7eb3"],
-  ["lavender", "Lavender haze", "#e4dafe, #a98bff"],
-  ["matcha", "Matcha latte", "#d3f0dc, #6cc58f"],
-  ["peach", "Peach sorbet", "#ffe0cc, #ff9f6e"],
-  ["midnight", "Midnight berry", "#2c2330, #ff8fc1"],
+  ["strawberry", "Rose", "#f9cdd9, #d8638a"],
+  ["lavender", "Bubblegum", "#ffc6e8, #ff5cb8"],
+  ["matcha", "Cherry blossom", "#fde0ea, #f48fb1"],
+  ["peach", "Rose gold", "#fbd5dc, #e8798f"],
+  ["midnight", "Midnight rose", "#3a1f30, #ff7cb5"],
 ];
 
 export function applyTheme(t: string) {

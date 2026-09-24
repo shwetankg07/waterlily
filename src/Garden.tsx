@@ -7,11 +7,11 @@ const STAGE_NAMES = ["a seed, waiting", "a tiny sprout", "growing leaves", "a bu
 
 export function Plant({ streak, wilting, size = 220 }: { streak: number; wilting?: boolean; size?: number }) {
   const st = stageOf(streak);
-  const leaf = "#7cc796", leafDark = "#5aa877";
+  const leaf = "#f7a9c7", leafDark = "#e47ea6"; // a pink plant
   const flower = (x: number, y: number, r: number, key: number) => (
     <g key={key} transform={`translate(${x} ${y})`}>
       {[0, 72, 144, 216, 288].map((a) => <ellipse key={a} cx="0" cy={-r} rx={r * 0.62} ry={r} fill="var(--accent)" opacity=".9" transform={`rotate(${a})`} />)}
-      <circle r={r * 0.55} fill="#ffe27a" />
+      <circle r={r * 0.55} fill="#ffe3ef" />
     </g>
   );
   return (

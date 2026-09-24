@@ -1,6 +1,8 @@
 import ReactDOM from "react-dom/client";
-import "@fontsource-variable/nunito";
-import "@fontsource-variable/caveat";
+import "@fontsource-variable/plus-jakarta-sans";
+import "@fontsource-variable/fraunces";
+import "@fontsource-variable/fraunces/standard-italic.css";
+import "@fontsource/italiana";
 import "./styles.css";
 import App from "./App";
 
