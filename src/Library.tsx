@@ -145,7 +145,7 @@ export default function Library({ folder, go }: { folder: string; go: Go }) {
 }
 
 function dragData(e: DragEvent, rel: string, isDir: boolean) {
-  e.dataTransfer.setData("application/x-tbd", JSON.stringify({ rel, isDir }));
+  e.dataTransfer.setData("application/x-waterlily", JSON.stringify({ rel, isDir }));
   e.dataTransfer.effectAllowed = "move";
 }
 
@@ -154,12 +154,12 @@ function useDrop(rel: string) {
   return {
     over,
     props: {
-      onDragOver: (e: DragEvent) => { if (e.dataTransfer.types.includes("application/x-tbd")) { e.preventDefault(); setOver(true); } },
+      onDragOver: (e: DragEvent) => { if (e.dataTransfer.types.includes("application/x-waterlily")) { e.preventDefault(); setOver(true); } },
       onDragLeave: (e: DragEvent) => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setOver(false); },
       onDrop: async (e: DragEvent) => {
         e.preventDefault();
         setOver(false);
-        const d = JSON.parse(e.dataTransfer.getData("application/x-tbd") || "null");
+        const d = JSON.parse(e.dataTransfer.getData("application/x-waterlily") || "null");
         if (!d || parentOf(d.rel) === rel || d.rel === rel) return;
         const to = rel ? `${rel}/${baseName(d.rel)}` : baseName(d.rel);
         if (await movePath(d.rel, to, d.isDir)) sound.whoosh();

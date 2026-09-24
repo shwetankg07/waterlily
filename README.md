@@ -1,4 +1,4 @@
-# tbd ✿
+# Waterlily ✿
 
 A cozy, fully offline home for your PDF notes. Highlight in colors that mean something, keep notes on your highlights, and organize your folders like a stationery desk.
 

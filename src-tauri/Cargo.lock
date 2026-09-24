@@ -4470,20 +4470,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tbd"
-version = "0.1.0"
-dependencies = [
- "notify",
- "serde",
- "serde_json",
- "tauri",
- "tauri-build",
- "tauri-plugin-dialog",
- "tauri-plugin-single-instance",
- "tauri-plugin-sql",
-]
-
-[[package]]
 name = "tempfile"
 version = "3.27.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5139,6 +5125,20 @@ dependencies = [
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
+]
+
+[[package]]
+name = "waterlily"
+version = "0.1.0"
+dependencies = [
+ "notify",
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-dialog",
+ "tauri-plugin-single-instance",
+ "tauri-plugin-sql",
 ]
 
 [[package]]

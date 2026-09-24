@@ -122,7 +122,7 @@ fn write_pdf(app: AppHandle, req: Request) -> Result<u64, String> {
         fs::copy(&path, &orig).map_err(|e| e.to_string())?;
     }
     let name = path.file_name().ok_or("bad path")?.to_string_lossy();
-    let tmp = path.with_file_name(format!(".{name}.tbd-tmp"));
+    let tmp = path.with_file_name(format!(".{name}.waterlily-tmp"));
     let written = fs::File::create(&tmp).and_then(|mut f| {
         f.write_all(data)?;
         f.sync_all()
@@ -217,7 +217,7 @@ fn restore_db(app: AppHandle, src: String) -> Result<(), String> {
     if !is_sqlite(Path::new(&src)) {
         return Err("that file isn't a backup made by this app".into());
     }
-    let db = app.path().app_config_dir().map_err(|e| e.to_string())?.join("tbd.db");
+    let db = app.path().app_config_dir().map_err(|e| e.to_string())?.join("waterlily.db");
     let tmp = db.with_extension("db.restoring");
     fs::copy(&src, &tmp).map_err(|e| e.to_string())?;
     for ext in ["-wal", "-shm"] {
@@ -258,7 +258,7 @@ mod tests {
     use super::*;
 
     fn tmpdir(name: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("tbd-test-{name}-{}", std::process::id()));
+        let d = std::env::temp_dir().join(format!("waterlily-test-{name}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&d);
         fs::create_dir_all(&d).unwrap();
         d

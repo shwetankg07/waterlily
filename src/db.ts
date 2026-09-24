@@ -43,7 +43,7 @@ const MIGRATIONS = [
 ];
 
 export async function openDb() {
-  db = await Database.load("sqlite:tbd.db");
+  db = await Database.load("sqlite:waterlily.db");
   for (const s of SCHEMA) await db.execute(s);
   const [{ user_version: version }] = await q<{ user_version: number }>(`PRAGMA user_version`);
   for (let i = version; i < MIGRATIONS.length; i++) {

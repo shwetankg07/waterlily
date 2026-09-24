@@ -50,7 +50,7 @@ export default function Settings() {
   };
 
   async function backup() {
-    const path = await save({ defaultPath: `tbd-backup-${today()}.db`, filters: [{ name: "Backup", extensions: ["db"] }] });
+    const path = await save({ defaultPath: `waterlily-backup-${today()}.db`, filters: [{ name: "Backup", extensions: ["db"] }] });
     if (!path) return;
     try {
       await invoke("clear_backup_target", { path }); // the dialog already confirmed replacing it

@@ -65,7 +65,7 @@ export default function App() {
   return (
     <div className="app">
       <aside className="side">
-        <div className="logo hand">tbd ✿</div>
+        <div className="logo hand">waterlily ✿</div>
         {NAV.map(([name, ico, label]) => (
           <button key={name} className="nav" aria-current={view.name === name ? "page" : undefined}
             onClick={() => go(name === "library" ? { name, folder: "" } : ({ name } as View))}>
