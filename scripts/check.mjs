@@ -107,4 +107,15 @@ assert.deepEqual(mergeLineRects([[10, 100, 50, 112], [52, 100, 90, 112], [10, 80
   assert.ok(a && a.hasAppearance !== false, "other viewers get the drawn stroke");
 }
 
+// Typed boxes come back with their words, size and color; saving again and again doesn't grow the file.
+{
+  const box = { id: "t1", page: 1, rects: [[60, 600, 300, 640]], hex: "#b8325e", note: "", kind: "text", text: "Entropy ↑ always\nनोट", size: 16 };
+  let bytes = await writeHighlights(await paperPdf("blank"), [box]);
+  const t = (await readHighlights(bytes)).find((h) => h.key === NM_PREFIX + "t1");
+  assert.ok(t && t.kind === "text" && t.text === box.text && t.size === 16 && t.hex === "#b8325e", "typed box read back exactly");
+  const first = bytes.length;
+  for (let i = 0; i < 5; i++) bytes = await writeHighlights(bytes, [box]);
+  assert.ok(bytes.length < first * 1.05, `repeated saves don't grow the file (${first} → ${bytes.length})`);
+}
+
 console.log("✓ all checks passed");

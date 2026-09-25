@@ -445,3 +445,22 @@ select.field option { background: var(--card); color: var(--ink); }
 .paper-pick.lined { background-image: repeating-linear-gradient(180deg, transparent 0 11px, #e3d6e3 11px 12px); }
 .paper-pick.grid { background-image: linear-gradient(#e3d6e3 1px, transparent 1px), linear-gradient(90deg, #e3d6e3 1px, transparent 1px); background-size: 9px 9px; }
 .paper-pick.dotted { background-image: radial-gradient(#d4c4d4 1.2px, transparent 1.4px); background-size: 9px 9px; }
+
+/* ---------- typed text boxes ---------- */
+.textboxes { position: absolute; inset: 0; z-index: 3; pointer-events: none; }
+.textboxes > * { pointer-events: auto; }
+.textboxes.passive > * { pointer-events: none; } /* pen, marker and eraser work over boxes */
+.tbox {
+  position: absolute; font-family: "Plus Jakarta Sans Variable", system-ui, sans-serif; line-height: 1.35;
+  white-space: pre-wrap; overflow-wrap: anywhere; padding: 1px 2px; border-radius: 4px; cursor: text;
+}
+.tbox:not(.editing):hover { outline: 1px dashed color-mix(in srgb, var(--accent) 55%, transparent); }
+.tbox.editing { outline: 1.5px solid var(--accent); background: rgb(255 255 255 / .6); padding: 0; }
+.tbox textarea {
+  display: block; width: 100%; resize: none; overflow: hidden; border: 0; outline: 0; background: transparent;
+  font: inherit; line-height: 1.35; padding: 1px 2px;
+}
+.tb-move, .tb-size { position: absolute; width: 14px; height: 14px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 2px #fff; touch-action: none; }
+.tb-move { left: -7px; top: -7px; cursor: move; }
+.tb-size { right: -7px; top: calc(50% - 7px); cursor: ew-resize; border-radius: 4px; width: 8px; right: -4px; }
+.nib b { font-family: "Fraunces Variable", Georgia, serif; line-height: 1; color: var(--ink); }

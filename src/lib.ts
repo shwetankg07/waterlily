@@ -256,11 +256,11 @@ async function importHighlights(fileId: number, bytes: Uint8Array, textOf: (page
   };
   for (const h of fresh) {
     await run(
-      `INSERT OR IGNORE INTO highlights(id, file_id, page, rects, color_id, text, note, created_at, source_key, ink, width, kind, hex)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
+      `INSERT OR IGNORE INTO highlights(id, file_id, page, rects, color_id, text, note, created_at, source_key, ink, width, kind, hex, size)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
       [h.ours ? h.key.slice(NM_PREFIX.length) : crypto.randomUUID(), fileId, h.page, JSON.stringify(h.rects),
-        nearest(h.hex), h.ink ? "" : textInRects(await textOf(h.page), h.rects), h.note, Date.now(), h.ours ? null : h.key,
-        h.ink ? JSON.stringify(h.ink) : null, h.width ?? null, h.kind ?? null, h.kind === "pen" ? h.hex : null],
+        nearest(h.hex), h.kind === "text" ? h.text ?? "" : h.ink ? "" : textInRects(await textOf(h.page), h.rects), h.note, Date.now(), h.ours ? null : h.key,
+        h.ink ? JSON.stringify(h.ink) : null, h.width ?? null, h.kind ?? null, h.kind ? h.hex : null, h.size ?? null],
     );
   }
   return fresh.length;
@@ -326,7 +326,7 @@ async function saveNow(fileId: number) {
     const hs = (await q<HighlightRow>(`SELECT * FROM highlights WHERE file_id=$1`, [fileId])).map(parseHl);
     const out = await writeHighlights(
       bytes,
-      hs.map((h) => ({ id: h.id, page: h.page, rects: h.rects, hex: h.hex ?? cols.get(h.color_id) ?? "#ffe680", note: h.note, ink: h.ink, width: h.width, kind: h.kind })),
+      hs.map((h) => ({ id: h.id, page: h.page, rects: h.rects, hex: h.hex ?? cols.get(h.color_id) ?? "#ffe680", note: h.note, ink: h.ink, width: h.width, kind: h.kind, text: h.text, size: h.size })),
     );
     // Never replace her file with something that doesn't open the same way.
     const [before, after] = await Promise.all([pageCount(bytes), pageCount(out)]);

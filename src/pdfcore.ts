@@ -1,5 +1,5 @@
 // Pure PDF helpers (no DOM, no Tauri) so they can be checked from node: scripts/check.mjs
-import { PDFDocument, PDFName, PDFArray, PDFDict, PDFString, PDFHexString, PDFRef, rgb } from "pdf-lib";
+import { PDFDocument, PDFName, PDFArray, PDFDict, PDFString, PDFHexString, PDFRef, PDFNumber, PDFStream, rgb, StandardFonts, type PDFFont } from "pdf-lib";
 import { getStroke } from "perfect-freehand";
 
 /** A rectangle in PDF user space: [x1, y1, x2, y2] with x1<x2, y1<y2. */
@@ -14,8 +14,47 @@ export interface WritableHighlight {
   /** Freehand strokes in PDF space. Marker: flat [x, y, …]. Pen: flat [x, y, pressure, …]. Absent for text highlights. */
   ink?: number[][] | null;
   width?: number | null;
-  /** "pen" for handwriting (opaque, pressure-sensitive); anything else is a highlight or marker. */
+  /** "pen" for handwriting, "text" for a typed box; anything else is a highlight or marker. */
   kind?: string | null;
+  /** Typed boxes: the text and its font size in points (color comes from hex). */
+  text?: string | null;
+  size?: number | null;
+}
+
+/**
+ * pdf-lib writes every object it loaded, referenced or not, so annotations we replace would pile up
+ * in the file on every save. Keep only what the document can still reach.
+ */
+function dropUnreachable(doc: PDFDocument) {
+  const ctx = doc.context;
+  const seen = new Set<string>();
+  const stack: unknown[] = [ctx.trailerInfo.Root, ctx.trailerInfo.Info, ctx.trailerInfo.Encrypt, ctx.trailerInfo.ID];
+  while (stack.length) {
+    const o = stack.pop();
+    if (o instanceof PDFRef) {
+      if (seen.has(o.toString())) continue;
+      seen.add(o.toString());
+      stack.push(ctx.lookup(o));
+    } else if (o instanceof PDFDict) stack.push(...o.values());
+    else if (o instanceof PDFArray) stack.push(...o.asArray());
+    else if (o instanceof PDFStream) stack.push(o.dict);
+  }
+  for (const [ref] of ctx.enumerateIndirectObjects()) if (!seen.has(ref.toString())) ctx.delete(ref);
+}
+
+/** Wrap text to a width with a font, keeping her own line breaks. */
+function wrap(text: string, font: PDFFont, size: number, width: number) {
+  const out: string[] = [];
+  for (const para of text.split("\n")) {
+    let line = "";
+    for (const word of para.split(/(\s+)/)) {
+      const next = line + word;
+      if (line && font.widthOfTextAtSize(next.trimEnd(), size) > width) { out.push(line.trimEnd()); line = word.trimStart(); }
+      else line = next;
+    }
+    out.push(line.trimEnd());
+  }
+  return out;
 }
 
 /** Pen handwriting options: pressure makes the line thicker, the ends taper slightly like real ink. */
@@ -132,7 +171,7 @@ export async function writeHighlights(bytes: Uint8Array, hs: WritableHighlight[]
       if (!(d instanceof PDFDict)) continue;
       const sub = d.get(PDFName.of("Subtype"));
       const ours = textOf(d.lookup(PDFName.of("NM"))).startsWith(NM_PREFIX);
-      if (sub === PDFName.of("Highlight") || (sub === PDFName.of("Ink") && ours)) dropped.add(String(o));
+      if (sub === PDFName.of("Highlight") || ((sub === PDFName.of("Ink") || sub === PDFName.of("FreeText")) && ours)) dropped.add(String(o));
     }
     for (const o of entries) {
       if (dropped.has(String(o))) continue;
@@ -145,13 +184,35 @@ export async function writeHighlights(bytes: Uint8Array, hs: WritableHighlight[]
   });
 
   const now = new Date();
+  let helv: PDFFont | null = null;
   for (const h of hs) {
     const page = pages[h.page - 1];
     if (!page || !h.rects.length) continue;
     const [r, g, b] = hexToRgb(h.hex);
     const gs = { ExtGState: { GS0: { Type: "ExtGState", BM: "Multiply" } } };
     let annot: PDFDict;
-    if (h.ink?.length && h.kind === "pen") {
+    if (h.kind === "text") {
+      // A typed box: /FreeText with the words in /Contents. The drawn text uses Helvetica, which covers
+      // Latin text; for anything else (Hindi, emoji) other viewers draw it themselves from /Contents.
+      const [x1, y1, x2, y2] = h.rects[0];
+      const sz = h.size ?? 14;
+      helv ??= await doc.embedFont(StandardFonts.Helvetica);
+      let ap: PDFRef | null = null;
+      try {
+        const lines = wrap(h.text ?? "", helv, sz, x2 - x1 - 4);
+        const body = lines.map((l, i) => `1 0 0 1 2 ${fmt(y2 - y1 - sz * (1.1 + i * 1.35))} Tm ${helv!.encodeText(l).toString()} Tj`).join(" ");
+        ap = ctx.register(ctx.stream(`BT /F1 ${fmt(sz)} Tf ${fmt(r)} ${fmt(g)} ${fmt(b)} rg ${body} ET`, {
+          Type: "XObject", Subtype: "Form", BBox: [0, 0, x2 - x1, y2 - y1], Matrix: [1, 0, 0, 1, x1, y1], Resources: { Font: { F1: helv.ref } },
+        }));
+      } catch { /* characters Helvetica can't draw: leave the drawing to the viewer */ }
+      annot = ctx.obj({
+        Type: "Annot", Subtype: "FreeText", P: page.ref, Rect: [x1, y1, x2, y2], F: 4, BS: { W: 0 },
+        DA: PDFString.of(`/Helv ${fmt(sz)} Tf ${fmt(r)} ${fmt(g)} ${fmt(b)} rg`), WLColor: PDFString.of(h.hex), WLSize: sz,
+        NM: PDFString.of(NM_PREFIX + h.id), T: PDFString.of(AUTHOR), M: PDFString.fromDate(now),
+      });
+      annot.set(PDFName.of("Contents"), PDFHexString.fromText(h.text ?? ""));
+      if (ap) annot.set(PDFName.of("AP"), ctx.obj({ N: ap }));
+    } else if (h.ink?.length && h.kind === "pen") {
       // Handwriting: the drawn shape is the pressure-varying outline, filled with solid ink. InkList keeps a
       // plain centerline for viewers that redraw ink themselves; /WLPoints keeps the exact pen data for us.
       const w = h.width ?? 2.5;
@@ -206,12 +267,14 @@ export async function writeHighlights(bytes: Uint8Array, hs: WritableHighlight[]
         C: [r, g, b], F: 4, NM: PDFString.of(NM_PREFIX + h.id), T: PDFString.of(AUTHOR), M: PDFString.fromDate(now), AP: { N: ap },
       });
     }
-    if (h.note) annot.set(PDFName.of("Contents"), PDFHexString.fromText(h.note));
+    if (h.note && h.kind !== "text") annot.set(PDFName.of("Contents"), PDFHexString.fromText(h.note));
     const ref = ctx.register(annot);
     const annots = page.node.lookupMaybe(PDFName.of("Annots"), PDFArray);
     if (annots) annots.push(ref);
     else page.node.set(PDFName.of("Annots"), ctx.obj([ref]));
   }
+  if (helv) await helv.embed(); // the font is written at save time; make it real before tidying up
+  dropUnreachable(doc);
   return doc.save();
 }
 
@@ -224,7 +287,9 @@ export interface ReadHighlight {
   note: string;
   ink?: number[][];
   width?: number;
-  kind?: "pen";
+  kind?: "pen" | "text";
+  text?: string;
+  size?: number;
 }
 
 export async function readHighlights(bytes: Uint8Array): Promise<ReadHighlight[]> {
@@ -253,6 +318,13 @@ export async function readHighlights(bytes: Uint8Array): Promise<ReadHighlight[]
         const rect = d.lookupMaybe(PDFName.of("Rect"), PDFArray)?.asArray().map(num) as Rect | undefined;
         const w = (d.lookupMaybe(PDFName.of("BS"), PDFDict)?.lookup(PDFName.of("W")) as { asNumber?: () => number } | undefined)?.asNumber?.() ?? 12;
         if (ink.length && rect) out.push({ key: nm, ours: true, page: i + 1, rects: [rect], hex, note: text(d.lookup(PDFName.of("Contents"))), ink, width: w, ...(pen ? { kind: "pen" as const } : {}) });
+        continue;
+      }
+      if (sub === PDFName.of("FreeText") && nm.startsWith(NM_PREFIX)) {
+        const rect = d.lookupMaybe(PDFName.of("Rect"), PDFArray)?.asArray().map(num) as Rect | undefined;
+        const size = (d.lookup(PDFName.of("WLSize")) as PDFNumber | undefined)?.asNumber?.() ?? 14;
+        const color = text(d.lookup(PDFName.of("WLColor"))) || "#2b2130";
+        if (rect) out.push({ key: nm, ours: true, page: i + 1, rects: [rect], hex: color, note: "", kind: "text", text: text(d.lookup(PDFName.of("Contents"))), size });
         continue;
       }
       if (sub !== PDFName.of("Highlight")) continue;

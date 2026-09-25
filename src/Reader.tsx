@@ -13,12 +13,14 @@ type Mode = "read" | "quiz" | "collapse";
 type Pending = { x: number; y: number; parts: { page: number; rects: Rect[]; text: string }[] };
 export type Active = { id: string; x: number; y: number };
 
-export type Tool = "select" | "highlight" | "marker" | "pen" | "eraser";
+export type Tool = "select" | "highlight" | "marker" | "pen" | "eraser" | "text";
 // The tool, colors and pen size stay picked when she opens the next PDF.
 let lastTool: Tool = "select";
 let lastPen: number | null = null;
 let lastInk = "#2b2130";
 let lastSize = 2.5;
+let lastTextSize = 16;
+const TEXT_SIZES: [number, string][] = [[12, "S"], [16, "M"], [22, "L"]];
 /** Open the next PDF with this tool picked (a fresh note opens with the pen). */
 export const preferTool = (t: Tool) => { lastTool = t; };
 const MARKER_WIDTH = 12; // PDF points, about one line of text
@@ -115,7 +117,7 @@ function hideHighlights(doc: PDFDocumentProxy, page: PDFPageProxy) {
   if (!p) {
     p = page.getAnnotations().then((annots) => {
       for (const a of annots)
-        if (a.subtype === "Highlight" || (a.subtype === "Ink" && a.titleObj?.str === AUTHOR)) doc.annotationStorage.setValue(a.id, { noView: true });
+        if (a.subtype === "Highlight" || a.titleObj?.str === AUTHOR) doc.annotationStorage.setValue(a.id, { noView: true });
     }).catch(() => {});
     hidden.set(page, p);
   }
@@ -166,6 +168,10 @@ function PdfReader({ fileId, page: startPage, go }: { fileId: number; page?: num
   const redoStack = useRef<{ before: HighlightRow[]; after: HighlightRow[] }[]>([]);
   const [, setHistoryTick] = useState(0);
   const [gen, setGen] = useState(0); // bumps when a note gets a new page and must be reopened
+  const [textSize, setTextSizeState] = useState(lastTextSize);
+  const setTextSize = (n: number) => { lastTextSize = n; setTextSizeState(n); };
+  // The typed box being written: an existing one (id) or a new one (id null), with its box in PDF space.
+  const [editing, setEditing] = useState<{ id: string | null; page: number; rect: Rect; text: string; size: number; hex: string } | null>(null);
   const jumpTo = useRef<number | null>(null);
   const justDrew = useRef(false);
   const scroller = useRef<HTMLDivElement>(null);
@@ -315,7 +321,7 @@ function PdfReader({ fileId, page: startPage, go }: { fileId: number; page?: num
     lastInput.current = Date.now();
     justDrew.current = false;
     // Highlighter, marker, pen and eraser: mouse and stylus draw, fingers keep scrolling.
-    if (mode !== "read" || tool === "select" || e.pointerType === "touch" || e.button !== 0) return;
+    if (mode !== "read" || tool === "select" || tool === "text" || e.pointerType === "touch" || e.button !== 0) return;
     const pageEl = (e.target as HTMLElement).closest<HTMLElement>("[data-page]");
     if (!pageEl) return;
     e.preventDefault(); // no native text selection; we build it ourselves
@@ -484,6 +490,33 @@ function PdfReader({ fileId, page: startPage, go }: { fileId: number; page?: num
     changed();
   }
 
+  /** Save the box being typed: create, update, or remove it if she cleared all the text. */
+  async function commitText(text: string, rect: Rect) {
+    const ed = editing;
+    setEditing(null);
+    if (!ed) return;
+    const words = text.replace(/\s+$/, "");
+    if (ed.id === null) {
+      if (!words.trim()) return;
+      const id = crypto.randomUUID();
+      await run(
+        `INSERT INTO highlights(id, file_id, page, rects, color_id, text, note, created_at, kind, hex, size) VALUES ($1,$2,$3,$4,$5,$6,'',$7,'text',$8,$9)`,
+        [id, fileId, ed.page, JSON.stringify([rect]), cols[0]?.id, words, Date.now(), ed.hex, ed.size],
+      );
+      await record([], await rowsOf([id]));
+    } else if (!words.trim()) {
+      return removeRows([ed.id]);
+    } else {
+      const before = await rowsOf([ed.id]);
+      if (before[0]?.text === words && before[0]?.rects === JSON.stringify([rect])) return;
+      await run(`UPDATE highlights SET text=$2, rects=$3 WHERE id=$1`, [ed.id, words, JSON.stringify([rect])]);
+      await record(before, await rowsOf([ed.id]));
+    }
+    await markDirty(fileId);
+    await reloadHls();
+    changed();
+  }
+
   async function addPage() {
     if (!(await addNotePage(fileId))) return;
     jumpTo.current = pages.length + 1;
@@ -586,6 +619,7 @@ function PdfReader({ fileId, page: startPage, go }: { fileId: number; page?: num
         if (e.key === "m") setTool("marker");
         if (e.key === "p") setTool("pen");
         if (e.key === "e") setTool("eraser");
+        if (e.key === "t") setTool("text");
       }
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") { e.preventDefault(); void (e.shiftKey ? redo() : undo()); }
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "y") { e.preventDefault(); void redo(); }
@@ -606,7 +640,12 @@ function PdfReader({ fileId, page: startPage, go }: { fileId: number; page?: num
     const [x, y] = pages[n - 1].getViewport({ scale }).convertToPdfPoint(e.clientX - box.left, e.clientY - box.top);
     // Newest first: it's drawn on top where highlights overlap.
     if (tool === "pen" || tool === "eraser") return;
-    const hit = [...hls].reverse().find((h) => h.page === n && h.kind !== "pen" &&
+    if (tool === "text" && mode === "read") {
+      // Start a new box with its top-left where she tapped.
+      setEditing({ id: null, page: n, rect: [x, y - textSize * 1.5, x + 240, y], text: "", size: textSize, hex: ink });
+      return;
+    }
+    const hit = [...hls].reverse().find((h) => h.page === n && h.kind !== "pen" && h.kind !== "text" &&
       (h.ink?.length ? onStroke(h, x, y) : h.rects.some(([a, b, c, d]) => x >= a && x <= c && y >= b && y <= d)));
     if (!hit) { setActive(null); return; }
     if (mode === "quiz") {
@@ -635,7 +674,7 @@ function PdfReader({ fileId, page: startPage, go }: { fileId: number; page?: num
   }
 
   const activeHl = hls.find((h) => h.id === active?.id);
-  const marks = hls.filter((h) => h.kind !== "pen"); // handwriting isn't listed, quizzed or collapsed
+  const marks = hls.filter((h) => h.kind !== "pen" && h.kind !== "text"); // handwriting and typing aren't listed, quizzed or collapsed
   const quizCount = marks.filter((h) => revealed.has(h.id)).length;
 
   return (
@@ -660,6 +699,9 @@ function PdfReader({ fileId, page: startPage, go }: { fileId: number; page?: num
               <button aria-pressed={tool === "pen"} onClick={() => setTool("pen")} title="Pen: handwrite (P)" aria-label="Pen">
                 <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M12 19l7-7 3 3-7 7zM18 13l-1.5-7.5L2 2l3.5 14.5L13 18zM2 2l7.6 7.6M11 11a2 2 0 1 0 0 .01" /></svg>
               </button>
+              <button aria-pressed={tool === "text"} onClick={() => setTool("text")} title="Text: tap the page and type (T)" aria-label="Text">
+                <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M5 5h14M12 5v14M9 19h6" /></svg>
+              </button>
               <button aria-pressed={tool === "eraser"} onClick={() => setTool("eraser")} title="Eraser: rub out ink and highlights (E)" aria-label="Eraser">
                 <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M20 20H9L4 15a2 2 0 0 1 0-2.8L13.2 3a2 2 0 0 1 2.8 0l5 5a2 2 0 0 1 0 2.8L12 20M7 11l7 7" /></svg>
               </button>
@@ -672,6 +714,18 @@ function PdfReader({ fileId, page: startPage, go }: { fileId: number; page?: num
                 <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="m15 14 5-5-5-5M20 9H9a5 5 0 0 0 0 10h3" /></svg>
               </button>
             </div>
+            {tool === "text" && (
+              <div className="pens">
+                {INKS.map((c, i) => (
+                  <button key={c} className="swatch small" style={{ background: c }} aria-pressed={ink === c} title={`Text color ${i + 1}`} aria-label={`Text color ${i + 1}`} onClick={() => setInk(c)} />
+                ))}
+                {TEXT_SIZES.map(([n, label]) => (
+                  <button key={label} className="nib" aria-pressed={textSize === n} title={`${label} text`} aria-label={`${label} text`} onClick={() => setTextSize(n)}>
+                    <b style={{ fontSize: 8 + n / 3 }}>A</b>
+                  </button>
+                ))}
+              </div>
+            )}
             {tool === "pen" && (
               <div className="pens">
                 {INKS.map((c, i) => (
@@ -723,6 +777,8 @@ function PdfReader({ fileId, page: startPage, go }: { fileId: number; page?: num
             {doc && scale > 0 && pages.map((p, i) => (
               <PdfPage key={i} doc={doc} page={p} n={i + 1} scale={scale} root={scroller}
                 hls={hls.filter((h) => h.page === i + 1)} colorOf={colorOf} mode={mode} revealed={revealed} fresh={fresh}
+                editing={editing?.page === i + 1 ? editing : null} onEditText={(h) => setEditing({ id: h.id, page: h.page, rect: h.rects[0], text: h.text, size: h.size ?? 16, hex: h.hex ?? INKS[0] })}
+                onCommitText={commitText} canEditText={tool === "select" || tool === "text" || tool === "highlight"}
                 draft={draft?.page === i + 1 ? draft : null} draftColor={draft?.kind === "pen" ? ink : colorOf.get(penColor ?? 0)} draftWidth={draft?.kind === "pen" ? size : MARKER_WIDTH}
                 onClick={onPageClick} />
             ))}
@@ -803,10 +859,12 @@ export function HighlightPop({ hl, cols, at, onColor, onNote, onDelete, onClose 
 // Past ~16 megapixels a single canvas gets heavy (and at high zoom can exceed what the webview allows).
 const MAX_CANVAS_PIXELS = 16e6;
 
-function PdfPage({ doc, page, n, scale, root, hls, colorOf, mode, revealed, fresh, draft, draftColor, draftWidth, onClick }: {
+function PdfPage({ doc, page, n, scale, root, hls, colorOf, mode, revealed, fresh, draft, draftColor, draftWidth, onClick, editing, onEditText, onCommitText, canEditText }: {
   doc: PDFDocumentProxy; page: PDFPageProxy; n: number; scale: number; root: React.RefObject<HTMLDivElement | null>;
   hls: Highlight[]; colorOf: Map<number, string>; mode: Mode; revealed: Set<string>; fresh: Set<string>;
   draft: { kind: "pen" | "marker"; px: number[] } | null; draftColor?: string; draftWidth: number;
+  editing: { id: string | null; rect: Rect; text: string; size: number; hex: string } | null;
+  onEditText: (h: Highlight) => void; onCommitText: (text: string, rect: Rect) => void; canEditText: boolean;
   onClick: (e: React.MouseEvent, n: number) => void;
 }) {
   const vp = useMemo(() => page.getViewport({ scale }), [page, scale]);
@@ -862,11 +920,21 @@ function PdfPage({ doc, page, n, scale, root, hls, colorOf, mode, revealed, fres
             <path d={outlinePath(getStroke(draft.px.reduce<number[][]>((a, v, i) => (i % 3 ? (a[a.length - 1].push(v), a) : [...a, [v]]), []), penOptions(draftWidth * scale)))} fill={draftColor} />
           </svg>
         )}
-        {hls.filter((h) => !h.ink?.length).flatMap((h) => h.rects.map((r, i) => {
+        {hls.filter((h) => !h.ink?.length && h.kind !== "text").flatMap((h) => h.rects.map((r, i) => {
           const b = toViewBox(vp, r);
           return <div key={h.id + i} className={`hl ${fresh.has(h.id) ? "fresh" : ""} ${revealed.has(h.id) ? "revealed" : ""}`}
             style={{ ...b, background: colorOf.get(h.color_id), opacity: mode === "quiz" && !revealed.has(h.id) ? 1 : undefined }} />;
         }))}
+      </div>
+      <div className={`textboxes ${canEditText ? "" : "passive"}`}>
+        {hls.filter((h) => h.kind === "text" && h.id !== editing?.id).map((h) => {
+          const b = toViewBox(vp, h.rects[0]);
+          return (
+            <div key={h.id} className="tbox" style={{ left: b.left, top: b.top, width: b.width, fontSize: (h.size ?? 16) * scale, color: h.hex ?? undefined }}
+              onPointerDown={(e) => e.stopPropagation()} onClick={(e) => { e.stopPropagation(); onEditText(h); }}>{h.text}</div>
+          );
+        })}
+        {editing && <TextEditor key={editing.id ?? "new"} ed={editing} vp={vp} scale={scale} onDone={onCommitText} />}
       </div>
       <div className="textLayer" ref={text}
         onMouseDown={(e) => e.currentTarget.classList.add("selecting")}
@@ -874,6 +942,49 @@ function PdfPage({ doc, page, n, scale, root, hls, colorOf, mode, revealed, fres
     </div>
   );
 }
+
+/**
+ * Typing on the page: a textarea that grows with its text. Drag the dotted handle to move the box and
+ * its right edge to resize it; Esc or clicking elsewhere saves.
+ */
+function TextEditor({ ed, vp, scale, onDone }: {
+  ed: { rect: Rect; text: string; size: number; hex: string };
+  vp: PageViewportLike; scale: number; onDone: (text: string, rect: Rect) => void;
+}) {
+  const [text, setText] = useState(ed.text);
+  const [rect, setRect] = useState<Rect>(ed.rect);
+  const area = useRef<HTMLTextAreaElement>(null);
+  const done = useRef(false);
+  const b = toViewBox(vp, rect);
+  const finish = () => {
+    if (done.current) return;
+    done.current = true;
+    const h = (area.current?.scrollHeight ?? b.height) + 4;
+    onDone(text, toPdfRect(vp, b.left, b.top, b.width, h));
+  };
+  useEffect(() => { const a = area.current!; a.focus(); a.setSelectionRange(a.value.length, a.value.length); }, []);
+  useEffect(() => { const a = area.current!; a.style.height = "0"; a.style.height = a.scrollHeight + "px"; }, [text, scale, rect]);
+  // Drag helpers: moving shifts the whole box, resizing changes its width (both in PDF points).
+  const dragWith = (e: React.PointerEvent, apply: (dx: number, dy: number, r: Rect) => Rect) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const start = { x: e.clientX, y: e.clientY, r: rect };
+    const move = (ev: PointerEvent) => setRect(apply((ev.clientX - start.x) / scale, (ev.clientY - start.y) / scale, start.r));
+    const up = () => { removeEventListener("pointermove", move); removeEventListener("pointerup", up); area.current?.focus(); };
+    addEventListener("pointermove", move);
+    addEventListener("pointerup", up);
+  };
+  return (
+    <div className="tbox editing" style={{ left: b.left, top: b.top, width: b.width }} onPointerDown={(e) => e.stopPropagation()} onClick={(e) => e.stopPropagation()}>
+      <span className="tb-move" title="Drag to move" aria-label="Move text box" onPointerDown={(e) => dragWith(e, (dx, dy, r) => [r[0] + dx, r[1] - dy, r[2] + dx, r[3] - dy])} />
+      <textarea ref={area} value={text} rows={1} placeholder="Type here…" aria-label="Text on the page"
+        style={{ fontSize: ed.size * scale, color: ed.hex }} onChange={(e) => setText(e.target.value)} onBlur={finish}
+        onKeyDown={(e) => { if (e.key === "Escape" || (e.key === "Enter" && (e.ctrlKey || e.metaKey))) { e.preventDefault(); finish(); } }} />
+      <span className="tb-size" title="Drag to resize" aria-label="Resize text box" onPointerDown={(e) => dragWith(e, (dx, _dy, r) => [r[0], r[1], Math.max(r[0] + 40, r[2] + dx), r[3]])} />
+    </div>
+  );
+}
+type PageViewportLike = Parameters<typeof toViewBox>[0];
 
 // ---------- "only highlights": crops of each highlight with adjustable context ----------
 
