@@ -144,6 +144,20 @@ fn write_pdf(app: AppHandle, req: Request) -> Result<u64, String> {
     Ok(fs::metadata(&path).map(|m| mtime(&m)).unwrap_or(0))
 }
 
+/// Creates a new file (a fresh note). Never replaces anything that's already there.
+#[tauri::command]
+fn create_file(req: Request) -> Result<(), String> {
+    let tauri::ipc::InvokeBody::Raw(data) = req.body() else {
+        return Err("expected raw bytes".into());
+    };
+    let path = PathBuf::from(header(&req, "path")?);
+    let mut f = fs::OpenOptions::new().write(true).create_new(true).open(&path).map_err(|e| match e.kind() {
+        std::io::ErrorKind::AlreadyExists => "a file with that name is already there".to_string(),
+        _ => e.to_string(),
+    })?;
+    f.write_all(data).and_then(|_| f.sync_all()).map_err(|e| e.to_string())
+}
+
 /// Moves or renames. Never replaces a different file; a case-only rename of the same
 /// file ("notes.pdf" -> "Notes.pdf", which Windows sees as one name) is allowed.
 #[tauri::command]
@@ -249,6 +263,7 @@ pub fn run() {
             scan,
             read_file,
             write_pdf,
+            create_file,
             move_path,
             make_dir,
             watch,

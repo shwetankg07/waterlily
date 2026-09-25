@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AnnotationMode, TextLayer, type PDFDocumentProxy, type PDFPageProxy, type RenderTask } from "pdfjs-dist/legacy/build/pdf.mjs";
 import { q, run, logActivity, parseHl, colors, type Color, type FileRow, type Highlight, type HighlightRow } from "./db";
-import { readBytes, openPdf, importNew, markDirty, flushSaves, displayName, changed, pdfError, isImage } from "./lib";
-import { toPdfRect, toViewBox, mergeLineRects, AUTHOR, type Rect } from "./pdfcore";
+import { readBytes, openPdf, importNew, markDirty, flushSaves, displayName, changed, pdfError, isImage, addNotePage } from "./lib";
+import { toPdfRect, toViewBox, mergeLineRects, AUTHOR, penOptions, type Rect } from "./pdfcore";
+import { getStroke } from "perfect-freehand";
 import { sound, sparkle, toast } from "./fx";
 import { useVersion, useData } from "./ui";
 import ImageReader from "./ImageReader";
@@ -12,11 +13,19 @@ type Mode = "read" | "quiz" | "collapse";
 type Pending = { x: number; y: number; parts: { page: number; rects: Rect[]; text: string }[] };
 export type Active = { id: string; x: number; y: number };
 
-export type Tool = "select" | "highlight" | "marker";
-// The tool and pen color stay picked when she opens the next PDF.
+export type Tool = "select" | "highlight" | "marker" | "pen" | "eraser";
+// The tool, colors and pen size stay picked when she opens the next PDF.
 let lastTool: Tool = "select";
 let lastPen: number | null = null;
+let lastInk = "#2b2130";
+let lastSize = 2.5;
+/** Open the next PDF with this tool picked (a fresh note opens with the pen). */
+export const preferTool = (t: Tool) => { lastTool = t; };
 const MARKER_WIDTH = 12; // PDF points, about one line of text
+/** Handwriting inks and nib sizes (PDF points). */
+const INKS = ["#2b2130", "#1f3a8a", "#b8325e", "#0f7a5a", "#7a3db8", "#c2410c"];
+const SIZES: [number, string][] = [[1.6, "fine"], [2.5, "medium"], [4, "bold"]];
+const outlinePath = (o: number[][]) => (o.length ? "M" + o.map((p) => `${p[0].toFixed(1)} ${p[1].toFixed(1)}`).join(" L") + " Z" : "");
 
 /** The text position under a point, if it's inside a page's text layer. */
 function caretAt(x: number, y: number): { node: Node; offset: number } | null {
@@ -30,12 +39,13 @@ function caretAt(x: number, y: number): { node: Node; offset: number } | null {
   return node && node.nodeType === Node.TEXT_NODE && node.parentElement?.closest(".textLayer") ? { node, offset } : null;
 }
 
-/** Is PDF point (x, y) on this marker stroke? */
-function onStroke(h: Highlight, x: number, y: number) {
-  const r = (h.width ?? MARKER_WIDTH) / 2 + 3;
+/** Is PDF point (x, y) on this marker or pen stroke? */
+function onStroke(h: Highlight, x: number, y: number, slop = 3) {
+  const step = h.kind === "pen" ? 3 : 2;
+  const r = (h.width ?? MARKER_WIDTH) / 2 + slop;
   return (h.ink ?? []).some((st) => {
-    for (let i = 0; i + 1 < st.length; i += 2) {
-      const [ax, ay, bx, by] = [st[i], st[i + 1], st[i + 2] ?? st[i], st[i + 3] ?? st[i + 1]];
+    for (let i = 0; i + 1 < st.length; i += step) {
+      const [ax, ay, bx, by] = [st[i], st[i + 1], st[i + step] ?? st[i], st[i + step + 1] ?? st[i + 1]];
       const dx = bx - ax, dy = by - ay, len = dx * dx + dy * dy;
       const t = len ? Math.max(0, Math.min(1, ((x - ax) * dx + (y - ay) * dy) / len)) : 0;
       if ((x - ax - t * dx) ** 2 + (y - ay - t * dy) ** 2 <= r * r) return true;
@@ -49,9 +59,16 @@ function Strokes({ hls, vp, colorOf, dy = 0, quiz, revealed }: {
   hls: Highlight[]; vp: { convertToViewportPoint(x: number, y: number): number[]; width: number; height: number };
   colorOf: Map<number, string>; dy?: number; quiz?: boolean; revealed?: Set<string>;
 }) {
-  const inked = hls.filter((h) => h.ink?.length);
-  if (!inked.length) return null;
+  const inked = hls.filter((h) => h.ink?.length && h.kind !== "pen");
+  const pens = hls.filter((h) => h.ink?.length && h.kind === "pen");
   const scale = (vp as unknown as { scale: number }).scale ?? 1;
+  const penPaths = pens.flatMap((h) => h.ink!.map((st, i) => {
+    const pts: number[][] = [];
+    for (let j = 0; j + 1 < st.length; j += 3) { const [px, py] = vp.convertToViewportPoint(st[j], st[j + 1]); pts.push([px, py, st[j + 2] ?? 0.5]); }
+    return <path key={h.id + i} d={outlinePath(getStroke(pts, penOptions((h.width ?? 2.5) * scale)))} fill={h.hex ?? "#2b2130"} />;
+  }));
+  const pensSvg = penPaths.length > 0 && <svg className="strokes ink" width={vp.width} height={vp.height} style={{ top: -dy }} aria-hidden>{penPaths}</svg>;
+  if (!inked.length) return pensSvg || null;
   const line = (h: Highlight) => h.ink!.map((st, i) => {
     const pts: string[] = [];
     for (let j = 0; j + 1 < st.length; j += 2) { const [px, py] = vp.convertToViewportPoint(st[j], st[j + 1]); pts.push(`${px},${py}`); }
@@ -63,6 +80,7 @@ function Strokes({ hls, vp, colorOf, dy = 0, quiz, revealed }: {
   const hidden = inked.filter((h) => quiz && !revealed?.has(h.id));
   const shown = inked.filter((h) => !hidden.includes(h));
   return <>
+    {pensSvg}
     {shown.length > 0 && <svg className="strokes" width={vp.width} height={vp.height} style={{ top: -dy }} aria-hidden>{shown.flatMap(line)}</svg>}
     {hidden.length > 0 && <svg className="strokes solid" width={vp.width} height={vp.height} style={{ top: -dy }} aria-hidden>{hidden.flatMap(line)}</svg>}
   </>;
@@ -128,12 +146,27 @@ function PdfReader({ fileId, page: startPage, go }: { fileId: number; page?: num
   const [cur, setCur] = useState(1);
   const [tool, setToolState] = useState<Tool>(lastTool);
   const [pen, setPenState] = useState<number | null>(lastPen);
+  const [ink, setInkState] = useState(lastInk);
+  const [size, setSizeState] = useState(lastSize);
   const setTool = (t: Tool) => { lastTool = t; setToolState(t); setPending(null); getSelection()?.removeAllRanges(); };
   const setPen = (c: number) => { lastPen = c; setPenState(c); };
+  const setInk = (c: string) => { lastInk = c; setInkState(c); };
+  const setSize = (w: number) => { lastSize = w; setSizeState(w); };
   const penColor = pen && cols.some((c) => c.id === pen) ? pen : cols[0]?.id;
-  // A stroke in progress: page number, points in PDF space, and the same points in page pixels for drawing.
-  const [draft, setDraft] = useState<{ page: number; pdf: number[]; px: number[] } | null>(null);
-  const drag = useRef<{ kind: "highlight"; anchor: { node: Node; offset: number } } | { kind: "marker"; page: number; el: HTMLElement } | null>(null);
+  // A stroke in progress: page, pen or marker, points in PDF space, and the same points in page pixels for
+  // drawing. Pen points carry pressure: [x, y, pressure, …].
+  const [draft, setDraft] = useState<{ page: number; kind: "marker" | "pen"; pdf: number[]; px: number[] } | null>(null);
+  const drag = useRef<
+    | { kind: "highlight"; anchor: { node: Node; offset: number } }
+    | { kind: "stroke" | "erase"; page: number; el: HTMLElement }
+    | null>(null);
+  const erased = useRef<Highlight[]>([]);
+  // Undo/redo: each step is the rows before and after a change.
+  const undoStack = useRef<{ before: HighlightRow[]; after: HighlightRow[] }[]>([]);
+  const redoStack = useRef<{ before: HighlightRow[]; after: HighlightRow[] }[]>([]);
+  const [, setHistoryTick] = useState(0);
+  const [gen, setGen] = useState(0); // bumps when a note gets a new page and must be reopened
+  const jumpTo = useRef<number | null>(null);
   const justDrew = useRef(false);
   const scroller = useRef<HTMLDivElement>(null);
   const lastInput = useRef(Date.now());
@@ -156,6 +189,8 @@ function PdfReader({ fileId, page: startPage, go }: { fileId: number; page?: num
       const [f] = await q<FileRow>(`SELECT * FROM files WHERE id=$1`, [fileId]);
       if (!f) return live && go({ name: "back" });
       setFile(f);
+      if (f.paper && !gen) setPanel(false); // a handwritten note has room to breathe; the Notes button brings the panel back
+      if (gen) { setPages([]); setDoc(undefined); }
       await run(`UPDATE files SET opened_at=$2 WHERE id=$1`, [fileId, Date.now()]);
       let bytes: Uint8Array;
       try {
@@ -177,7 +212,8 @@ function PdfReader({ fileId, page: startPage, go }: { fileId: number; page?: num
       setScale(Math.min(2.2, Math.max(0.6, (width - 64) / maxW)));
       setDoc(doc);
       setPages(ps);
-      setCur(Math.min(Math.max(1, startPage ?? f.last_page ?? 1), ps.length));
+      setCur(Math.min(Math.max(1, jumpTo.current ?? startPage ?? f.last_page ?? 1), ps.length));
+      jumpTo.current = null;
     })().catch((e) => toast(`Something went wrong opening this PDF: ${e}`));
     return () => {
       live = false;
@@ -185,7 +221,7 @@ function PdfReader({ fileId, page: startPage, go }: { fileId: number; page?: num
       void d?.loadingTask.destroy();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [fileId]);
+  }, [fileId, gen]);
 
   // Jump to the start page once laid out, then record it as read.
   const jumped = useRef(false);
@@ -278,7 +314,7 @@ function PdfReader({ fileId, page: startPage, go }: { fileId: number; page?: num
     downWasPalm.current = isPalm(e);
     lastInput.current = Date.now();
     justDrew.current = false;
-    // Highlighter and marker: mouse and stylus draw, fingers keep scrolling.
+    // Highlighter, marker, pen and eraser: mouse and stylus draw, fingers keep scrolling.
     if (mode !== "read" || tool === "select" || e.pointerType === "touch" || e.button !== 0) return;
     const pageEl = (e.target as HTMLElement).closest<HTMLElement>("[data-page]");
     if (!pageEl) return;
@@ -289,8 +325,12 @@ function PdfReader({ fileId, page: startPage, go }: { fileId: number; page?: num
     if (tool === "highlight") {
       const anchor = caretAt(e.clientX, e.clientY);
       if (anchor) drag.current = { kind: "highlight", anchor };
+    } else if (tool === "eraser") {
+      drag.current = { kind: "erase", page: Number(pageEl.dataset.page), el: pageEl };
+      erased.current = [];
+      eraseAt(e);
     } else {
-      drag.current = { kind: "marker", page: Number(pageEl.dataset.page), el: pageEl };
+      drag.current = { kind: "stroke", page: Number(pageEl.dataset.page), el: pageEl };
       addPoint(e);
     }
   }
@@ -298,7 +338,7 @@ function PdfReader({ fileId, page: startPage, go }: { fileId: number; page?: num
     markPen(e);
     const d = drag.current;
     if (!d) return;
-    if (d.kind === "marker") return addPoint(e);
+    if (d.kind !== "highlight") return d.kind === "stroke" ? addPoint(e) : eraseAt(e);
     // Highlighter: select from where the pen went down to where it is now, snapped to words.
     const focus = caretAt(e.clientX, e.clientY);
     if (!focus) return;
@@ -314,16 +354,44 @@ function PdfReader({ fileId, page: startPage, go }: { fileId: number; page?: num
   }
   function addPoint(e: React.PointerEvent) {
     const d = drag.current;
-    if (d?.kind !== "marker") return;
+    if (d?.kind !== "stroke") return;
+    lastInput.current = Date.now(); // writing counts as studying
+    const kind: "pen" | "marker" = tool === "pen" ? "pen" : "marker";
     const box = d.el.getBoundingClientRect();
-    const x = e.clientX - box.left, y = e.clientY - box.top;
-    const [px, py] = pages[d.page - 1].getViewport({ scale }).convertToPdfPoint(x, y);
-    setDraft((cur) => {
-      const c = cur && cur.page === d.page ? cur : { page: d.page, pdf: [], px: [] };
-      const n = c.pdf.length;
-      if (n && Math.hypot(px - c.pdf[n - 2], py - c.pdf[n - 1]) < 1.5) return c; // skip jitter
-      return { page: d.page, pdf: [...c.pdf, +px.toFixed(1), +py.toFixed(1)], px: [...c.px, x, y] };
+    const vp = pages[d.page - 1].getViewport({ scale });
+    // Styluses report points faster than the screen draws; the in-between ones arrive coalesced.
+    const evs = e.nativeEvent.getCoalescedEvents?.().length ? e.nativeEvent.getCoalescedEvents() : [e.nativeEvent];
+    const pts = evs.map((ev) => {
+      const x = ev.clientX - box.left, y = ev.clientY - box.top;
+      const [px, py] = vp.convertToPdfPoint(x, y);
+      // A stylus reports real pressure; a mouse gets a steady middle value.
+      const pr = +(ev.pointerType === "pen" && ev.pressure > 0 ? ev.pressure : 0.5).toFixed(2);
+      return { x, y, px: +px.toFixed(1), py: +py.toFixed(1), pr };
     });
+    setDraft((cur) => {
+      const c = cur && cur.page === d.page && cur.kind === kind ? cur : { page: d.page, kind, pdf: [] as number[], px: [] as number[] };
+      const step = kind === "pen" ? 3 : 2;
+      const pdf = [...c.pdf], px = [...c.px];
+      for (const p of pts) {
+        const n = pdf.length;
+        if (n && Math.hypot(p.px - pdf[n - step], p.py - pdf[n - step + 1]) < (kind === "pen" ? 0.5 : 1.5)) continue; // skip jitter
+        if (kind === "pen") { pdf.push(p.px, p.py, p.pr); px.push(p.x, p.y, p.pr); } else { pdf.push(p.px, p.py); px.push(p.x, p.y); }
+      }
+      return pdf.length === c.pdf.length ? c : { ...c, pdf, px };
+    });
+  }
+
+  /** Eraser: whatever it touches (ink, marker, highlight) disappears; committed on lift so undo can bring it back. */
+  function eraseAt(e: React.PointerEvent) {
+    const d = drag.current;
+    if (d?.kind !== "erase") return;
+    const box = d.el.getBoundingClientRect();
+    const [x, y] = pages[d.page - 1].getViewport({ scale }).convertToPdfPoint(e.clientX - box.left, e.clientY - box.top);
+    const hit = hls.filter((h) => h.page === d.page && !erased.current.includes(h) &&
+      (h.ink?.length ? onStroke(h, x, y, 4) : h.rects.some(([a, b, c, dd]) => x >= a && x <= c && y >= b && y <= dd)));
+    if (!hit.length) return;
+    erased.current.push(...hit);
+    setHls((all) => all.filter((h) => !hit.includes(h)));
   }
   function onPointerUp(e: React.PointerEvent) {
     markPen(e);
@@ -331,7 +399,13 @@ function PdfReader({ fileId, page: startPage, go }: { fileId: number; page?: num
     const d = drag.current;
     drag.current = null;
     if (downWasPalm.current) return;
-    if (d?.kind === "marker") return void finishStroke();
+    if (d?.kind === "stroke") return void finishStroke();
+    if (d?.kind === "erase") {
+      const gone = erased.current;
+      erased.current = [];
+      if (gone.length) { justDrew.current = true; void removeRows(gone.map((h) => h.id)); }
+      return;
+    }
     if (d?.kind === "highlight") {
       const got = selectionParts();
       if (got) { justDrew.current = true; void saveParts(got.parts, penColor, { x: e.clientX, y: e.clientY }); }
@@ -343,20 +417,78 @@ function PdfReader({ fileId, page: startPage, go }: { fileId: number; page?: num
   async function finishStroke() {
     const st = draft;
     setDraft(null);
-    // A tap isn't a stroke: let the click open whatever is under it.
-    if (!st || st.pdf.length < 4 || Math.hypot(st.px[0] - st.px[st.px.length - 2], st.px[1] - st.px[st.px.length - 1]) < 4 && st.pdf.length < 8) return;
+    if (!st) return;
+    const step = st.kind === "pen" ? 3 : 2, n = st.px.length;
+    // A marker tap isn't a stroke: let the click open whatever is under it. The pen keeps dots (the i's and full stops).
+    if (st.kind === "marker" && (n < 4 || (Math.hypot(st.px[0] - st.px[n - 2], st.px[1] - st.px[n - 1]) < 4 && n < 8))) return;
+    if (st.kind === "pen" && n < 3) return;
     justDrew.current = true;
-    const xs = st.pdf.filter((_, i) => i % 2 === 0), ys = st.pdf.filter((_, i) => i % 2 === 1), w = MARKER_WIDTH;
-    const bbox: Rect = [Math.min(...xs) - w / 2, Math.min(...ys) - w / 2, Math.max(...xs) + w / 2, Math.max(...ys) + w / 2];
+    const xs = st.pdf.filter((_, i) => i % step === 0), ys = st.pdf.filter((_, i) => i % step === 1);
+    const w = st.kind === "pen" ? size : MARKER_WIDTH;
+    const bbox: Rect = [Math.min(...xs) - w, Math.min(...ys) - w, Math.max(...xs) + w, Math.max(...ys) + w];
+    const id = crypto.randomUUID();
     await run(
-      `INSERT INTO highlights(id, file_id, page, rects, color_id, text, note, created_at, ink, width) VALUES ($1,$2,$3,$4,$5,'','',$6,$7,$8)`,
-      [crypto.randomUUID(), fileId, st.page, JSON.stringify([bbox]), penColor, Date.now(), JSON.stringify([st.pdf]), w],
+      `INSERT INTO highlights(id, file_id, page, rects, color_id, text, note, created_at, ink, width, kind, hex) VALUES ($1,$2,$3,$4,$5,'','',$6,$7,$8,$9,$10)`,
+      [id, fileId, st.page, JSON.stringify([bbox]), st.kind === "pen" ? cols[0]?.id : penColor, Date.now(), JSON.stringify([st.pdf]), w,
+        st.kind === "pen" ? "pen" : null, st.kind === "pen" ? ink : null],
     );
+    await record([], await rowsOf([id]));
     await markDirty(fileId);
-    await logActivity(fileId, { highlights: 1 });
-    sound.pop();
+    if (st.kind === "marker") { await logActivity(fileId, { highlights: 1 }); sound.pop(); }
     await reloadHls();
     changed();
+  }
+
+  // ---------- undo / redo ----------
+  const COLS = "id, file_id, page, rects, color_id, text, note, created_at, source_key, ink, width, kind, hex, size";
+  const rowsOf = async (ids: string[]) =>
+    ids.length ? q<HighlightRow>(`SELECT ${COLS} FROM highlights WHERE id IN (${ids.map((_, i) => `$${i + 1}`).join(",")})`, ids) : [];
+  async function record(before: HighlightRow[], after: HighlightRow[]) {
+    undoStack.current.push({ before, after });
+    if (undoStack.current.length > 200) undoStack.current.shift();
+    redoStack.current = [];
+    setHistoryTick((t) => t + 1);
+  }
+  /** Make the database match `to`, given it currently matches `from`. */
+  async function apply(from: HighlightRow[], to: HighlightRow[]) {
+    for (const r of from) if (!to.some((t) => t.id === r.id)) await run(`DELETE FROM highlights WHERE id=$1`, [r.id]);
+    for (const r of to) {
+      const v = r as HighlightRow & { source_key?: string | null };
+      await run(`INSERT OR REPLACE INTO highlights(${COLS}) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
+        [v.id, v.file_id, v.page, v.rects, v.color_id, v.text, v.note, v.created_at, v.source_key ?? null, v.ink, v.width, v.kind, v.hex, v.size]);
+    }
+    await markDirty(fileId);
+    await reloadHls();
+    changed();
+  }
+  async function undo() {
+    const step = undoStack.current.pop();
+    if (!step) return;
+    redoStack.current.push(step);
+    setHistoryTick((t) => t + 1);
+    await apply(step.after, step.before);
+  }
+  async function redo() {
+    const step = redoStack.current.pop();
+    if (!step) return;
+    undoStack.current.push(step);
+    setHistoryTick((t) => t + 1);
+    await apply(step.before, step.after);
+  }
+  async function removeRows(ids: string[]) {
+    const before = await rowsOf(ids);
+    for (const id of ids) await run(`DELETE FROM highlights WHERE id=$1`, [id]);
+    await record(before, []);
+    await markDirty(fileId);
+    await reloadHls();
+    changed();
+  }
+
+  async function addPage() {
+    if (!(await addNotePage(fileId))) return;
+    jumpTo.current = pages.length + 1;
+    jumped.current = false;
+    setGen((g) => g + 1);
   }
 
   /** The current text selection as highlight parts, one per page, snapped to whole words. */
@@ -429,6 +561,7 @@ function PdfReader({ fileId, page: startPage, go }: { fileId: number; page?: num
         [id, fileId, p.page, JSON.stringify(p.rects), colorId, p.text, Date.now()],
       );
     }
+    await record([], await rowsOf(ids));
     await markDirty(fileId);
     await logActivity(fileId, { highlights: 1 });
     getSelection()?.removeAllRanges();
@@ -445,12 +578,17 @@ function PdfReader({ fileId, page: startPage, go }: { fileId: number; page?: num
       if ((e.target as HTMLElement).closest?.("input, textarea")) return;
       if (e.key === "Escape") { setPending(null); setActive(null); }
       if (pending && /^[1-9]$/.test(e.key) && cols[+e.key - 1]) void createHighlight(cols[+e.key - 1].id);
-      else if (!pending && tool !== "select" && /^[1-9]$/.test(e.key) && cols[+e.key - 1]) setPen(cols[+e.key - 1].id);
+      else if (!pending && (tool === "highlight" || tool === "marker") && /^[1-9]$/.test(e.key) && cols[+e.key - 1]) setPen(cols[+e.key - 1].id);
+      else if (tool === "pen" && /^[1-9]$/.test(e.key) && INKS[+e.key - 1]) setInk(INKS[+e.key - 1]);
       if (!e.ctrlKey && !e.metaKey && mode === "read") {
         if (e.key === "v") setTool("select");
         if (e.key === "h") setTool("highlight");
         if (e.key === "m") setTool("marker");
+        if (e.key === "p") setTool("pen");
+        if (e.key === "e") setTool("eraser");
       }
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") { e.preventDefault(); void (e.shiftKey ? redo() : undo()); }
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "y") { e.preventDefault(); void redo(); }
       if ((e.ctrlKey || e.metaKey) && (e.key === "=" || e.key === "+")) { e.preventDefault(); zoom(1.15); }
       if ((e.ctrlKey || e.metaKey) && e.key === "-") { e.preventDefault(); zoom(1 / 1.15); }
     };
@@ -467,7 +605,8 @@ function PdfReader({ fileId, page: startPage, go }: { fileId: number; page?: num
     const box = (e.currentTarget as HTMLElement).getBoundingClientRect();
     const [x, y] = pages[n - 1].getViewport({ scale }).convertToPdfPoint(e.clientX - box.left, e.clientY - box.top);
     // Newest first: it's drawn on top where highlights overlap.
-    const hit = [...hls].reverse().find((h) => h.page === n &&
+    if (tool === "pen" || tool === "eraser") return;
+    const hit = [...hls].reverse().find((h) => h.page === n && h.kind !== "pen" &&
       (h.ink?.length ? onStroke(h, x, y) : h.rects.some(([a, b, c, d]) => x >= a && x <= c && y >= b && y <= d)));
     if (!hit) { setActive(null); return; }
     if (mode === "quiz") {
@@ -481,8 +620,10 @@ function PdfReader({ fileId, page: startPage, go }: { fileId: number; page?: num
   }
 
   async function updateHl(id: string, patch: { color_id?: number; note?: string }) {
+    const before = await rowsOf([id]);
     if (patch.color_id !== undefined) await run(`UPDATE highlights SET color_id=$2 WHERE id=$1`, [id, patch.color_id]);
     if (patch.note !== undefined) await run(`UPDATE highlights SET note=$2 WHERE id=$1`, [id, patch.note]);
+    await record(before, await rowsOf([id]));
     await markDirty(fileId);
     await reloadHls();
     changed();
@@ -490,14 +631,12 @@ function PdfReader({ fileId, page: startPage, go }: { fileId: number; page?: num
 
   async function deleteHl(id: string) {
     setActive(null);
-    await run(`DELETE FROM highlights WHERE id=$1`, [id]);
-    await markDirty(fileId);
-    await reloadHls();
-    changed();
+    await removeRows([id]);
   }
 
   const activeHl = hls.find((h) => h.id === active?.id);
-  const quizCount = hls.filter((h) => revealed.has(h.id)).length;
+  const marks = hls.filter((h) => h.kind !== "pen"); // handwriting isn't listed, quizzed or collapsed
+  const quizCount = marks.filter((h) => revealed.has(h.id)).length;
 
   return (
     <div className="reader">
@@ -518,8 +657,34 @@ function PdfReader({ fileId, page: startPage, go }: { fileId: number; page?: num
               <button aria-pressed={tool === "marker"} onClick={() => setTool("marker")} title="Marker: draw freely (M)" aria-label="Marker">
                 <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M3 21c3-1 5-4 8-4s3 2 6 2 4-3 4-3M15 4l5 5-8 8H7v-5z" /></svg>
               </button>
+              <button aria-pressed={tool === "pen"} onClick={() => setTool("pen")} title="Pen: handwrite (P)" aria-label="Pen">
+                <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M12 19l7-7 3 3-7 7zM18 13l-1.5-7.5L2 2l3.5 14.5L13 18zM2 2l7.6 7.6M11 11a2 2 0 1 0 0 .01" /></svg>
+              </button>
+              <button aria-pressed={tool === "eraser"} onClick={() => setTool("eraser")} title="Eraser: rub out ink and highlights (E)" aria-label="Eraser">
+                <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M20 20H9L4 15a2 2 0 0 1 0-2.8L13.2 3a2 2 0 0 1 2.8 0l5 5a2 2 0 0 1 0 2.8L12 20M7 11l7 7" /></svg>
+              </button>
             </div>
-            {tool !== "select" && (
+            <div className="seg">
+              <button onClick={() => void undo()} disabled={!undoStack.current.length} title="Undo (Ctrl+Z)" aria-label="Undo">
+                <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M9 14 4 9l5-5M4 9h11a5 5 0 0 1 0 10h-3" /></svg>
+              </button>
+              <button onClick={() => void redo()} disabled={!redoStack.current.length} title="Redo (Ctrl+Shift+Z)" aria-label="Redo">
+                <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="m15 14 5-5-5-5M20 9H9a5 5 0 0 0 0 10h3" /></svg>
+              </button>
+            </div>
+            {tool === "pen" && (
+              <div className="pens">
+                {INKS.map((c, i) => (
+                  <button key={c} className="swatch small" style={{ background: c }} aria-pressed={ink === c} title={`Ink ${i + 1}`} aria-label={`Ink color ${i + 1}`} onClick={() => setInk(c)} />
+                ))}
+                {SIZES.map(([w, label]) => (
+                  <button key={label} className="nib" aria-pressed={size === w} title={`${label} nib`} aria-label={`${label} nib`} onClick={() => setSize(w)}>
+                    <i style={{ width: w * 2.4, height: w * 2.4 }} />
+                  </button>
+                ))}
+              </div>
+            )}
+            {(tool === "highlight" || tool === "marker") && (
               <div className="pens">
                 {cols.map((c, i) => (
                   <button key={c.id} className="swatch small" style={{ background: c.hex }} aria-pressed={penColor === c.id}
@@ -534,9 +699,9 @@ function PdfReader({ fileId, page: startPage, go }: { fileId: number; page?: num
           <button aria-pressed={mode === "quiz"} onClick={() => { setMode("quiz"); setRevealed(new Set()); setPending(null); setActive(null); }}>Quiz me</button>
           <button aria-pressed={mode === "collapse"} onClick={() => { setMode("collapse"); setPending(null); setActive(null); }}>Only highlights</button>
         </div>
-        {mode === "quiz" && <span className="muted">{quizCount}/{hls.length} revealed
-          <button className="btn small ghost" onClick={() => setRevealed(quizCount === hls.length ? new Set() : new Set(hls.map((h) => h.id)))}>
-            {quizCount === hls.length ? "hide all" : "show all"}</button></span>}
+        {mode === "quiz" && <span className="muted">{quizCount}/{marks.length} revealed
+          <button className="btn small ghost" onClick={() => setRevealed(quizCount === marks.length ? new Set() : new Set(marks.map((h) => h.id)))}>
+            {quizCount === marks.length ? "hide all" : "show all"}</button></span>}
         {mode !== "collapse" && <>
           <button className="btn small" onClick={() => zoom(1 / 1.15)} aria-label="Zoom out">−</button>
           <span className="muted" style={{ minWidth: "3.2em", textAlign: "center" }}>{Math.round(scale * 100)}%</span>
@@ -548,7 +713,7 @@ function PdfReader({ fileId, page: startPage, go }: { fileId: number; page?: num
       <div className={`rbody ${panel ? "" : "nopanel"}`}>
         {mode === "collapse" ? (
           <div className="pages">
-            {doc && <Collapsed doc={doc} pages={pages} hls={hls} colorOf={colorOf} onOpen={(n) => { setMode("read"); requestAnimationFrame(() => scrollToPage(n, false)); }} />}
+            {doc && <Collapsed doc={doc} pages={pages} hls={marks} colorOf={colorOf} onOpen={(n) => { setMode("read"); requestAnimationFrame(() => scrollToPage(n, false)); }} />}
           </div>
         ) : (
           <div className={`pages ${mode === "quiz" ? "cloze" : ""} tool-${mode === "read" ? tool : "select"}`} ref={scroller} onScroll={onScroll}
@@ -558,17 +723,21 @@ function PdfReader({ fileId, page: startPage, go }: { fileId: number; page?: num
             {doc && scale > 0 && pages.map((p, i) => (
               <PdfPage key={i} doc={doc} page={p} n={i + 1} scale={scale} root={scroller}
                 hls={hls.filter((h) => h.page === i + 1)} colorOf={colorOf} mode={mode} revealed={revealed} fresh={fresh}
-                draft={draft?.page === i + 1 ? draft.px : null} draftColor={colorOf.get(penColor ?? 0)} onClick={onPageClick} />
+                draft={draft?.page === i + 1 ? draft : null} draftColor={draft?.kind === "pen" ? ink : colorOf.get(penColor ?? 0)} draftWidth={draft?.kind === "pen" ? size : MARKER_WIDTH}
+                onClick={onPageClick} />
             ))}
-            {pages.length > 0 && hls.length === 0 && mode === "quiz" && <div className="empty"><p className="hand">nothing to quiz yet</p><p className="muted">Highlight something in Read mode first.</p></div>}
+            {file?.paper && pages.length > 0 && mode === "read" && (
+              <button className="add-page" onClick={() => void addPage()}>＋ Add a page</button>
+            )}
+            {pages.length > 0 && marks.length === 0 && mode === "quiz" && <div className="empty"><p className="hand">nothing to quiz yet</p><p className="muted">Highlight something in Read mode first.</p></div>}
           </div>
         )}
 
         {panel && (
           <aside className="panel" aria-label="Highlights in this PDF">
-            <h2 className="hand" style={{ marginBottom: ".6rem" }}>{hls.length ? `${hls.length} highlight${hls.length > 1 ? "s" : ""}` : "no highlights yet"}</h2>
-            {!hls.length && <p className="muted">Select text on the page, then pick a color. Keys 1–{cols.length} work too.</p>}
-            {hls.map((h) => (
+            <h2 className="hand" style={{ marginBottom: ".6rem" }}>{marks.length ? `${marks.length} highlight${marks.length > 1 ? "s" : ""}` : "no highlights yet"}</h2>
+            {!marks.length && <p className="muted">Select text on the page, then pick a color. Keys 1–{cols.length} work too.</p>}
+            {marks.map((h) => (
               <button key={h.id} className="note-card" style={{ ["--hc" as string]: colorOf.get(h.color_id) }}
                 onClick={() => { setMode(mode === "collapse" ? "read" : mode); requestAnimationFrame(() => scrollToPage(h.page)); }}>
                 <div className="q">{mode === "quiz" && !revealed.has(h.id) ? "▒▒▒▒ ▒▒▒ ▒▒▒▒▒" : h.text || (h.ink ? "✎ marker stroke" : "(highlight)")}</div>
@@ -634,10 +803,10 @@ export function HighlightPop({ hl, cols, at, onColor, onNote, onDelete, onClose 
 // Past ~16 megapixels a single canvas gets heavy (and at high zoom can exceed what the webview allows).
 const MAX_CANVAS_PIXELS = 16e6;
 
-function PdfPage({ doc, page, n, scale, root, hls, colorOf, mode, revealed, fresh, draft, draftColor, onClick }: {
+function PdfPage({ doc, page, n, scale, root, hls, colorOf, mode, revealed, fresh, draft, draftColor, draftWidth, onClick }: {
   doc: PDFDocumentProxy; page: PDFPageProxy; n: number; scale: number; root: React.RefObject<HTMLDivElement | null>;
   hls: Highlight[]; colorOf: Map<number, string>; mode: Mode; revealed: Set<string>; fresh: Set<string>;
-  draft: number[] | null; draftColor?: string;
+  draft: { kind: "pen" | "marker"; px: number[] } | null; draftColor?: string; draftWidth: number;
   onClick: (e: React.MouseEvent, n: number) => void;
 }) {
   const vp = useMemo(() => page.getViewport({ scale }), [page, scale]);
@@ -682,10 +851,15 @@ function PdfPage({ doc, page, n, scale, root, hls, colorOf, mode, revealed, fres
       <canvas ref={canvas} />
       <div className="hl-layer">
         <Strokes hls={hls} vp={vp} colorOf={colorOf} quiz={mode === "quiz"} revealed={revealed} />
-        {draft && (
+        {draft && draft.kind === "marker" && (
           <svg className="strokes" width={vp.width} height={vp.height} aria-hidden>
-            <polyline points={draft.reduce((a, v, i) => a + (i % 2 ? `,${v} ` : `${v}`), "")} fill="none" stroke={draftColor}
-              strokeWidth={MARKER_WIDTH * scale} strokeLinecap="round" strokeLinejoin="round" />
+            <polyline points={draft.px.reduce((a, v, i) => a + (i % 2 ? `,${v} ` : `${v}`), "")} fill="none" stroke={draftColor}
+              strokeWidth={draftWidth * scale} strokeLinecap="round" strokeLinejoin="round" />
+          </svg>
+        )}
+        {draft && draft.kind === "pen" && (
+          <svg className="strokes ink" width={vp.width} height={vp.height} aria-hidden>
+            <path d={outlinePath(getStroke(draft.px.reduce<number[][]>((a, v, i) => (i % 3 ? (a[a.length - 1].push(v), a) : [...a, [v]]), []), penOptions(draftWidth * scale)))} fill={draftColor} />
           </svg>
         )}
         {hls.filter((h) => !h.ink?.length).flatMap((h) => h.rects.map((r, i) => {

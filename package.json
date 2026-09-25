@@ -21,6 +21,7 @@
     "@tauri-apps/plugin-sql": "^2.4.1",
     "pdf-lib": "^1.17.1",
     "pdfjs-dist": "^6.3.289",
+    "perfect-freehand": "^1.2.3",
     "react": "^19.1.0",
     "react-dom": "^19.1.0"
   },

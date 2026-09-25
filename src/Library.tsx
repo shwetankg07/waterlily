@@ -1,6 +1,8 @@
 import { useState, type DragEvent, type ReactNode } from "react";
 import { q, run, type FileRow, type FolderRow, type Tag } from "./db";
-import { dirs, parentOf, baseName, displayName, extOf, movePath, makeFolder, indexing, rootName, rootMissing, changed } from "./lib";
+import { preferTool } from "./Reader";
+import type { Paper } from "./pdfcore";
+import { createNote, dirs, parentOf, baseName, displayName, extOf, movePath, makeFolder, indexing, rootName, rootMissing, changed } from "./lib";
 import { useVersion, useData, Dialog, PASTELS, StickerPicker, imageToDataUrl, daysUntil } from "./ui";
 import { sound, toast } from "./fx";
 import type { Go } from "./App";
@@ -13,6 +15,7 @@ export default function Library({ folder, go }: { folder: string; go: Go }) {
   const [tagFilter, setTagFilter] = useState<number | null>(null);
   const [editing, setEditing] = useState<Target | null>(null);
   const [newFolder, setNewFolder] = useState(false);
+  const [newNote, setNewNote] = useState(false);
 
   const data = useData(async () => {
     const [files, folders, tags, fileTags] = await Promise.all([
@@ -52,6 +55,7 @@ export default function Library({ folder, go }: { folder: string; go: Go }) {
           className="field grow" style={{ maxWidth: 420 }} placeholder="Search your notes, highlights and file names"
           value={query} onChange={(e) => setQuery(e.target.value)} aria-label="Search"
         />
+        <button className="btn primary" onClick={() => setNewNote(true)}>New note</button>
         <button className="btn" onClick={() => setNewFolder(true)}>New folder</button>
         {indexing.left > 0 && <span className="muted">reading {indexing.left} new PDF{indexing.left > 1 ? "s" : ""}…</span>}
       </div>
@@ -140,6 +144,7 @@ export default function Library({ folder, go }: { folder: string; go: Go }) {
       {editing && <Decorate target={editing} tags={data.tags} fileTags={data.fileTags}
         meta={editing.kind === "folder" ? data.folders.get(editing.rel) : undefined} onClose={() => setEditing(null)} />}
       {newFolder && <NewFolder parent={folder} onClose={() => setNewFolder(false)} />}
+      {newNote && <NewNote folder={folder} go={go} onClose={() => setNewNote(false)} />}
     </div>
   );
 }
@@ -295,6 +300,44 @@ function Decorate({ target, meta, tags, fileTags, onClose }: {
       <div className="row" style={{ justifyContent: "flex-end", marginTop: "1.4rem" }}>
         <button className="btn ghost" onClick={onClose}>Cancel</button>
         <button className="btn primary" disabled={!nameOk} onClick={save}>Save</button>
+      </div>
+    </Dialog>
+  );
+}
+
+const PAPERS: [Paper, string][] = [["lined", "Lined"], ["grid", "Grid"], ["dotted", "Dotted"], ["blank", "Blank"]];
+
+/** A fresh note: a PDF on the paper she picks, opened with the pen ready. */
+function NewNote({ folder, go, onClose }: { folder: string; go: Go; onClose: () => void }) {
+  const [name, setName] = useState("");
+  const [paper, setPaper] = useState<Paper>("lined");
+  const title = name.trim() || `Note ${new Date().toLocaleDateString(undefined, { day: "numeric", month: "short" })}`;
+  const ok = !BAD_NAME.test(title);
+  const create = async () => {
+    if (!ok) return;
+    const id = await createNote(folder, title, paper);
+    if (id === null) return; // the toast says why; keep the dialog open
+    preferTool("pen");
+    sound.pop();
+    onClose();
+    go({ name: "reader", fileId: id });
+  };
+  return (
+    <Dialog onClose={onClose}>
+      <h2 className="hand">New note</h2>
+      <label className="dlg-sec" htmlFor="nname">Name</label>
+      <input id="nname" className="field" autoFocus placeholder={title} value={name} maxLength={120}
+        onChange={(e) => setName(e.target.value)} onKeyDown={(e) => e.key === "Enter" && create()} />
+      {!ok && <p className="muted">Names can't contain \ / : * ? " &lt; &gt; |</p>}
+      <div className="dlg-sec">Paper</div>
+      <div className="papers">
+        {PAPERS.map(([id, label]) => (
+          <button key={id} className={`paper-pick ${id}`} aria-pressed={paper === id} onClick={() => setPaper(id)}>{label}</button>
+        ))}
+      </div>
+      <div className="row" style={{ justifyContent: "flex-end", marginTop: "1.2rem" }}>
+        <button className="btn ghost" onClick={onClose}>Cancel</button>
+        <button className="btn primary" disabled={!ok} onClick={create}>Create note</button>
       </div>
     </Dialog>
   );

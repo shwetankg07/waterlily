@@ -4,7 +4,7 @@ import { listen } from "@tauri-apps/api/event";
 import * as pdfjs from "pdfjs-dist/legacy/build/pdf.mjs";
 import workerUrl from "pdfjs-dist/legacy/build/pdf.worker.min.mjs?url";
 import { q, run, getSetting, parseHl, colors, type FileRow, type HighlightRow } from "./db";
-import { readHighlights, writeHighlights, textInRects, hexToRgb, NM_PREFIX } from "./pdfcore";
+import { readHighlights, writeHighlights, textInRects, hexToRgb, NM_PREFIX, paperPdf, addPaperPage, type Paper } from "./pdfcore";
 import { toast } from "./fx";
 
 pdfjs.GlobalWorkerOptions.workerSrc = workerUrl;
@@ -219,7 +219,7 @@ async function indexImage(f: FileRow) {
   await run(`UPDATE files SET pages=1, thumb=$2, hash=$3, indexed_mtime=$4 WHERE id=$1`, [f.id, thumb, await sha256(bytes), f.mtime]);
 }
 
-async function renderThumb(doc: pdfjs.PDFDocumentProxy) {
+async function renderThumb(doc: pdfjs.PDFDocumentProxy, withAnnotations = false) {
   const page = await doc.getPage(1);
   const vp = page.getViewport({ scale: 1 });
   const viewport = page.getViewport({ scale: 360 / vp.width });
@@ -227,7 +227,7 @@ async function renderThumb(doc: pdfjs.PDFDocumentProxy) {
   canvas.width = viewport.width;
   canvas.height = viewport.height;
   // "print" renders without requestAnimationFrame, which pauses while the window is minimized.
-  await page.render({ canvas, viewport, intent: "print", annotationMode: pdfjs.AnnotationMode.DISABLE }).promise;
+  await page.render({ canvas, viewport, intent: "print", annotationMode: withAnnotations ? pdfjs.AnnotationMode.ENABLE : pdfjs.AnnotationMode.DISABLE }).promise;
   return canvas.toDataURL("image/jpeg", 0.8);
 }
 
@@ -256,11 +256,11 @@ async function importHighlights(fileId: number, bytes: Uint8Array, textOf: (page
   };
   for (const h of fresh) {
     await run(
-      `INSERT OR IGNORE INTO highlights(id, file_id, page, rects, color_id, text, note, created_at, source_key, ink, width)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+      `INSERT OR IGNORE INTO highlights(id, file_id, page, rects, color_id, text, note, created_at, source_key, ink, width, kind, hex)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
       [h.ours ? h.key.slice(NM_PREFIX.length) : crypto.randomUUID(), fileId, h.page, JSON.stringify(h.rects),
         nearest(h.hex), h.ink ? "" : textInRects(await textOf(h.page), h.rects), h.note, Date.now(), h.ours ? null : h.key,
-        h.ink ? JSON.stringify(h.ink) : null, h.width ?? null],
+        h.ink ? JSON.stringify(h.ink) : null, h.width ?? null, h.kind ?? null, h.kind === "pen" ? h.hex : null],
     );
   }
   return fresh.length;
@@ -326,7 +326,7 @@ async function saveNow(fileId: number) {
     const hs = (await q<HighlightRow>(`SELECT * FROM highlights WHERE file_id=$1`, [fileId])).map(parseHl);
     const out = await writeHighlights(
       bytes,
-      hs.map((h) => ({ id: h.id, page: h.page, rects: h.rects, hex: cols.get(h.color_id) ?? "#ffe680", note: h.note, ink: h.ink, width: h.width })),
+      hs.map((h) => ({ id: h.id, page: h.page, rects: h.rects, hex: h.hex ?? cols.get(h.color_id) ?? "#ffe680", note: h.note, ink: h.ink, width: h.width, kind: h.kind })),
     );
     // Never replace her file with something that doesn't open the same way.
     const [before, after] = await Promise.all([pageCount(bytes), pageCount(out)]);
@@ -334,6 +334,11 @@ async function saveNow(fileId: number) {
     const mtime = await invoke<number>("write_pdf", out, {
       headers: { path: encodeURIComponent(abs(f.rel)), backup: String(f.id) },
     });
+    // Notes show their handwriting on the Library cover, so redraw it.
+    if (f.paper) {
+      const nd = await openPdf(out);
+      try { await run(`UPDATE files SET thumb=$2 WHERE id=$1`, [fileId, await renderThumb(nd, true)]); } finally { void nd.loadingTask.destroy(); }
+    }
     // Our own write shouldn't trigger a re-index. Only clear the changes this write included:
     // an edit made while it ran bumped the counter and still gets its own save.
     await run(`UPDATE files SET mtime=$2, indexed_mtime=$2, size=$3, hash=$4, dirty=max(dirty-$5, 0) WHERE id=$1`, [
@@ -367,6 +372,37 @@ export async function movePath(fromRel: string, toRel: string, isDir: boolean) {
   } else await run(`UPDATE files SET rel=$2 WHERE rel=$1`, [fromRel, toRel]);
   await sync();
   return true;
+}
+
+/** Create a new note (a PDF on the chosen paper) in a folder. Returns its file id. */
+export async function createNote(folderRel: string, name: string, paper: Paper) {
+  const rel = folderRel ? `${folderRel}/${name}.pdf` : `${name}.pdf`;
+  try {
+    await invoke("create_file", await paperPdf(paper), { headers: { path: encodeURIComponent(abs(rel)) } });
+  } catch (e) {
+    toast(`Couldn't create "${name}": ${e}`);
+    return null;
+  }
+  await sync();
+  const [f] = await q<{ id: number }>(`SELECT id FROM files WHERE rel=$1`, [rel]);
+  if (f) await run(`UPDATE files SET paper=$2 WHERE id=$1`, [f.id, paper]);
+  return f?.id ?? null;
+}
+
+/** Add a page of the note's paper to the end. Pending ink is written first so nothing is lost. */
+export async function addNotePage(fileId: number) {
+  await flushSaves();
+  const [f] = await q<FileRow>(`SELECT * FROM files WHERE id=$1`, [fileId]);
+  if (!f?.paper) return false;
+  try {
+    const out = await addPaperPage(await readBytes(f.rel), f.paper as Paper);
+    const mtime = await invoke<number>("write_pdf", out, { headers: { path: encodeURIComponent(abs(f.rel)), backup: String(f.id) } });
+    await run(`UPDATE files SET mtime=$2, indexed_mtime=$2, size=$3, pages=pages+1 WHERE id=$1`, [fileId, mtime, out.length]);
+    return true;
+  } catch (e) {
+    toast(`Couldn't add a page: ${pdfError(e)}`);
+    return false;
+  }
 }
 
 export async function makeFolder(parentRel: string, name: string) {

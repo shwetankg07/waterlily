@@ -43,6 +43,13 @@ const MIGRATIONS = [
   // Freehand marker strokes: JSON [[x, y, x, y, …], …] in PDF space, and the pen width in points.
   `ALTER TABLE highlights ADD COLUMN ink TEXT`,
   `ALTER TABLE highlights ADD COLUMN width REAL`,
+  // Notes: which paper a note was made on (null for everything else)...
+  `ALTER TABLE files ADD COLUMN paper TEXT`,
+  // ...and what an annotation is: null = highlight or marker, "pen" = handwriting, "text" = a typed box.
+  // Pen and text carry their own color (hex) and size, since ink colors aren't highlighter meanings.
+  `ALTER TABLE highlights ADD COLUMN kind TEXT`,
+  `ALTER TABLE highlights ADD COLUMN hex TEXT`,
+  `ALTER TABLE highlights ADD COLUMN size REAL`,
 ];
 
 export async function openDb() {
@@ -84,7 +91,7 @@ export interface FileRow {
   id: number; rel: string; size: number; mtime: number; hash: string | null;
   pages: number; last_page: number; max_page: number; thumb: string | null;
   color: string | null; stickers: string; cover: string | null;
-  indexed_mtime: number | null; missing: number; opened_at: number | null; dirty: number;
+  indexed_mtime: number | null; missing: number; opened_at: number | null; dirty: number; paper: string | null;
 }
 export interface FolderRow {
   rel: string; color: string | null; stickers: string; cover: string | null;
@@ -95,6 +102,7 @@ export interface Tag { id: number; name: string; color: string }
 export interface HighlightRow {
   id: string; file_id: number; page: number; rects: string; color_id: number;
   text: string; note: string; created_at: number; ink: string | null; width: number | null;
+  kind: string | null; hex: string | null; size: number | null;
 }
 export interface Highlight extends Omit<HighlightRow, "rects" | "ink"> { rects: Rect[]; ink: number[][] | null }
 

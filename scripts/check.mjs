@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { PDFDocument, PDFName, PDFString } from "pdf-lib";
 import * as pdfjs from "pdfjs-dist/legacy/build/pdf.mjs";
-import { writeHighlights, readHighlights, toPdfRect, toViewBox, mergeLineRects, NM_PREFIX } from "../src/pdfcore.ts";
+import { writeHighlights, readHighlights, toPdfRect, toViewBox, mergeLineRects, NM_PREFIX, paperPdf, addPaperPage } from "../src/pdfcore.ts";
 
 // A 2-page PDF with a CropBox offset and one "foreign" highlight + its popup on page 1.
 const src = await PDFDocument.create();
@@ -91,6 +91,20 @@ assert.deepEqual(mergeLineRects([[10, 100, 50, 112], [52, 100, 90, 112], [10, 80
   const pj = await pdfjs.getDocument({ data: twice.slice() }).promise;
   const a = (await (await pj.getPage(1)).getAnnotations()).find((x) => x.subtype === "Ink" && x.titleObj?.str === "Waterlily");
   assert.ok(a, "pdf.js sees our stroke and its author tag (used to avoid drawing it twice)");
+}
+
+// Notes: paper pages, and handwriting that comes back with its exact points and pressure.
+{
+  const note = await addPaperPage(await paperPdf("lined"), "grid");
+  assert.equal((await PDFDocument.load(note)).getPageCount(), 2, "a new note gets another page");
+  const stroke = [100, 700, 0.3, 120, 705, 0.6, 140, 702, 0.9, 160, 698, 0.5];
+  const written = await writeHighlights(note, [{ id: "p1", page: 2, rects: [[98, 694, 162, 709]], hex: "#2b2130", note: "", ink: [stroke], width: 2.5, kind: "pen" }]);
+  const back = (await readHighlights(written)).find((h) => h.key === NM_PREFIX + "p1");
+  assert.ok(back && back.kind === "pen" && back.page === 2, "handwriting is read back as pen ink on its page");
+  assert.deepEqual(back.ink, [stroke]);
+  const pj = await pdfjs.getDocument({ data: written.slice() }).promise;
+  const a = (await (await pj.getPage(2)).getAnnotations()).find((x) => x.subtype === "Ink");
+  assert.ok(a && a.hasAppearance !== false, "other viewers get the drawn stroke");
 }
 
 console.log("✓ all checks passed");

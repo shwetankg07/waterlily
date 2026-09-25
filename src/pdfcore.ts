@@ -1,5 +1,6 @@
 // Pure PDF helpers (no DOM, no Tauri) so they can be checked from node: scripts/check.mjs
-import { PDFDocument, PDFName, PDFArray, PDFDict, PDFString, PDFHexString, PDFRef } from "pdf-lib";
+import { PDFDocument, PDFName, PDFArray, PDFDict, PDFString, PDFHexString, PDFRef, rgb } from "pdf-lib";
+import { getStroke } from "perfect-freehand";
 
 /** A rectangle in PDF user space: [x1, y1, x2, y2] with x1<x2, y1<y2. */
 export type Rect = [number, number, number, number];
@@ -10,9 +11,56 @@ export interface WritableHighlight {
   rects: Rect[]; // for marker strokes: their bounding box
   hex: string;
   note: string;
-  /** Freehand marker: strokes as flat [x, y, x, y, …] lists in PDF space. Absent for text highlights. */
+  /** Freehand strokes in PDF space. Marker: flat [x, y, …]. Pen: flat [x, y, pressure, …]. Absent for text highlights. */
   ink?: number[][] | null;
   width?: number | null;
+  /** "pen" for handwriting (opaque, pressure-sensitive); anything else is a highlight or marker. */
+  kind?: string | null;
+}
+
+/** Pen handwriting options: pressure makes the line thicker, the ends taper slightly like real ink. */
+export const penOptions = (width: number) => ({ size: width, thinning: 0.6, smoothing: 0.55, streamline: 0.4, simulatePressure: false });
+
+/** Outline polygon of one pen stroke ([x, y, pressure, …]) as [[x, y], …]. */
+export function penOutline(st: number[], width: number): number[][] {
+  const pts: number[][] = [];
+  for (let i = 0; i + 1 < st.length; i += 3) pts.push([st[i], st[i + 1], st[i + 2] ?? 0.5]);
+  return getStroke(pts, penOptions(width));
+}
+
+// ---------- paper for new notes ----------
+
+export type Paper = "blank" | "lined" | "grid" | "dotted";
+const A4: [number, number] = [595.28, 841.89];
+
+/** Draw the paper pattern on a fresh page. Faint, so handwriting stays the star. */
+function drawPaper(doc: PDFDocument, style: Paper) {
+  const page = doc.addPage(A4);
+  const [w, h] = A4;
+  const faint = rgb(0.84, 0.8, 0.86);
+  if (style === "lined") {
+    for (let y = h - 90; y > 40; y -= 26) page.drawLine({ start: { x: 36, y }, end: { x: w - 36, y }, thickness: 0.6, color: faint });
+    page.drawLine({ start: { x: 78, y: h - 40 }, end: { x: 78, y: 30 }, thickness: 0.8, color: rgb(0.96, 0.7, 0.78) });
+  } else if (style === "grid") {
+    for (let x = 36; x < w - 30; x += 18) page.drawLine({ start: { x, y: 36 }, end: { x, y: h - 36 }, thickness: 0.4, color: faint });
+    for (let y = 36; y < h - 30; y += 18) page.drawLine({ start: { x: 36, y }, end: { x: w - 36, y }, thickness: 0.4, color: faint });
+  } else if (style === "dotted") {
+    for (let x = 36; x < w - 30; x += 18) for (let y = 36; y < h - 30; y += 18) page.drawCircle({ x, y, size: 0.9, color: faint });
+  }
+}
+
+/** A brand-new one-page note on the chosen paper. */
+export async function paperPdf(style: Paper): Promise<Uint8Array> {
+  const doc = await PDFDocument.create();
+  drawPaper(doc, style);
+  return doc.save();
+}
+
+/** Append one more page of paper to a note. */
+export async function addPaperPage(bytes: Uint8Array, style: Paper): Promise<Uint8Array> {
+  const doc = await PDFDocument.load(bytes, { updateMetadata: false });
+  drawPaper(doc, style);
+  return doc.save();
 }
 
 /** Author written on our annotations; pdf.js exposes it (it doesn't expose /NM), so the reader can spot our marker strokes. */
@@ -103,7 +151,24 @@ export async function writeHighlights(bytes: Uint8Array, hs: WritableHighlight[]
     const [r, g, b] = hexToRgb(h.hex);
     const gs = { ExtGState: { GS0: { Type: "ExtGState", BM: "Multiply" } } };
     let annot: PDFDict;
-    if (h.ink?.length) {
+    if (h.ink?.length && h.kind === "pen") {
+      // Handwriting: the drawn shape is the pressure-varying outline, filled with solid ink. InkList keeps a
+      // plain centerline for viewers that redraw ink themselves; /WLPoints keeps the exact pen data for us.
+      const w = h.width ?? 2.5;
+      const outlines = h.ink.map((st) => penOutline(st, w)).filter((o) => o.length > 2);
+      const all = outlines.flat();
+      const x1 = Math.min(...all.map((p) => p[0])) - 1, y1 = Math.min(...all.map((p) => p[1])) - 1;
+      const x2 = Math.max(...all.map((p) => p[0])) + 1, y2 = Math.max(...all.map((p) => p[1])) + 1;
+      const path = outlines.map((o) => o.map((p, i) => `${fmt(p[0] - x1)} ${fmt(p[1] - y1)} ${i ? "l" : "m"}`).join(" ") + " h").join(" ");
+      const ap = ctx.register(ctx.stream(`${fmt(r)} ${fmt(g)} ${fmt(b)} rg ${path} f`, {
+        Type: "XObject", Subtype: "Form", BBox: [0, 0, x2 - x1, y2 - y1], Matrix: [1, 0, 0, 1, x1, y1],
+      }));
+      annot = ctx.obj({
+        Type: "Annot", Subtype: "Ink", P: page.ref, Rect: [x1, y1, x2, y2], BS: { W: w }, C: [r, g, b], F: 4,
+        InkList: h.ink.map((st) => st.filter((_, i) => i % 3 !== 2)), WLPoints: h.ink,
+        NM: PDFString.of(NM_PREFIX + h.id), T: PDFString.of(AUTHOR), M: PDFString.fromDate(now), AP: { N: ap },
+      });
+    } else if (h.ink?.length) {
       // Freehand marker: an /Ink annotation with a round-capped translucent stroke.
       const w = h.width ?? 12;
       const xs = h.ink.flatMap((st) => st.filter((_, i) => i % 2 === 0));
@@ -159,6 +224,7 @@ export interface ReadHighlight {
   note: string;
   ink?: number[][];
   width?: number;
+  kind?: "pen";
 }
 
 export async function readHighlights(bytes: Uint8Array): Promise<ReadHighlight[]> {
@@ -181,11 +247,12 @@ export async function readHighlights(bytes: Uint8Array): Promise<ReadHighlight[]
         : "#ffeb3b";
       // Our own marker strokes come back too (e.g. after a reinstall); other apps' ink stays theirs.
       if (sub === PDFName.of("Ink") && nm.startsWith(NM_PREFIX)) {
-        const ink = (d.lookupMaybe(PDFName.of("InkList"), PDFArray)?.asArray() ?? [])
-          .map((st) => (ctx.lookup(st) as PDFArray).asArray().map(num));
+        const pen = d.lookupMaybe(PDFName.of("WLPoints"), PDFArray);
+        const ink = (pen ?? d.lookupMaybe(PDFName.of("InkList"), PDFArray))?.asArray()
+          .map((st) => (ctx.lookup(st) as PDFArray).asArray().map(num)) ?? [];
         const rect = d.lookupMaybe(PDFName.of("Rect"), PDFArray)?.asArray().map(num) as Rect | undefined;
         const w = (d.lookupMaybe(PDFName.of("BS"), PDFDict)?.lookup(PDFName.of("W")) as { asNumber?: () => number } | undefined)?.asNumber?.() ?? 12;
-        if (ink.length && rect) out.push({ key: nm, ours: true, page: i + 1, rects: [rect], hex, note: text(d.lookup(PDFName.of("Contents"))), ink, width: w });
+        if (ink.length && rect) out.push({ key: nm, ours: true, page: i + 1, rects: [rect], hex, note: text(d.lookup(PDFName.of("Contents"))), ink, width: w, ...(pen ? { kind: "pen" as const } : {}) });
         continue;
       }
       if (sub !== PDFName.of("Highlight")) continue;

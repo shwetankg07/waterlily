@@ -15,7 +15,7 @@ export default function Board({ go }: { go: Go }) {
   const data = useData(async () => ({
     cols: await colors(),
     rows: await q<Row>(`SELECT h.id, h.file_id, h.page, h.color_id, h.text, h.note, h.created_at, f.rel, h.ink IS NOT NULL inked
-      FROM highlights h JOIN files f ON f.id = h.file_id WHERE f.missing = 0`),
+      FROM highlights h JOIN files f ON f.id = h.file_id WHERE f.missing = 0 AND coalesce(h.kind, '') NOT IN ('pen', 'text')`),
   }), [v]);
   if (!data) return null;
 

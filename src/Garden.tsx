@@ -44,7 +44,7 @@ export default function Garden() {
   const data = useData(async () => {
     const days = await loadDays();
     const [tot] = await q<{ h: number; s: number; f: number }>(
-      `SELECT (SELECT count(*) FROM highlights) h, coalesce(sum(seconds),0) s, coalesce(sum(focus_min),0) f FROM activity`,
+      `SELECT (SELECT count(*) FROM highlights WHERE coalesce(kind, '') NOT IN ('pen', 'text')) h, coalesce(sum(seconds),0) s, coalesce(sum(focus_min),0) f FROM activity`,
     );
     return { days, tot };
   }, [v]);
