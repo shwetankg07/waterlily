@@ -105,6 +105,13 @@ assert.deepEqual(mergeLineRects([[10, 100, 50, 112], [52, 100, 90, 112], [10, 80
   const pj = await pdfjs.getDocument({ data: written.slice() }).promise;
   const a = (await (await pj.getPage(2)).getAnnotations()).find((x) => x.subtype === "Ink");
   assert.ok(a && a.hasAppearance !== false, "other viewers get the drawn stroke");
+  // A note says it's a note (and its paper) inside the file, through saves, so a reinstall still knows.
+  const info = (await pj.getMetadata()).info;
+  assert.match(String(info.Keywords), /\bwaterlily-paper:lined\b/, "the note's paper is kept in the file");
+  // A long stroke (a minute of scribbling) round-trips, and later saves reuse its drawing.
+  const long = Array.from({ length: 6000 }, (_, i) => [100 + (i % 400), 300 + Math.sin(i / 9) * 40, 0.5]).flat();
+  const w2 = await writeHighlights(note, [{ id: "p2", page: 1, rects: [[90, 250, 510, 350]], hex: "#2b2130", note: "", ink: [long], width: 2.5, kind: "pen" }]);
+  assert.equal((await readHighlights(w2)).find((h) => h.key === NM_PREFIX + "p2")?.ink[0].length, long.length, "a long stroke comes back whole");
 }
 
 // Typed boxes come back with their words, size and color; saving again and again doesn't grow the file.

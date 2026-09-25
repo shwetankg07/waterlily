@@ -1,17 +1,44 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AnnotationMode, TextLayer, type PDFDocumentProxy, type PDFPageProxy, type RenderTask } from "pdfjs-dist/legacy/build/pdf.mjs";
 import { q, run, logActivity, parseHl, colors, type Color, type FileRow, type Highlight, type HighlightRow } from "./db";
 import { readBytes, openPdf, importNew, markDirty, flushSaves, displayName, changed, pdfError, isImage, addNotePage } from "./lib";
 import { toPdfRect, toViewBox, mergeLineRects, AUTHOR, penOptions, type Rect } from "./pdfcore";
 import { getStroke } from "perfect-freehand";
 import { sound, sparkle, toast } from "./fx";
-import { useVersion, useData } from "./ui";
+import { useVersion, useData, usePinch } from "./ui";
 import ImageReader from "./ImageReader";
 import type { Go } from "./App";
 
 type Mode = "read" | "quiz" | "collapse";
 type Pending = { x: number; y: number; parts: { page: number; rects: Rect[]; text: string }[] };
 export type Active = { id: string; x: number; y: number };
+/** The typed box being written: an existing one (id) or a new one (id null), with its box in PDF space. */
+type Editing = { id: string | null; page: number; rect: Rect; text: string; size: number; hex: string };
+/** A stroke in progress: points in PDF space, and the same points in page pixels for drawing. Pen points carry pressure: [x, y, pressure, …]. */
+type Draft = { page: number; kind: "marker" | "pen"; pdf: number[]; px: number[] };
+type Row = HighlightRow & { source_key: string | null };
+const NONE: Highlight[] = [];
+const COLS = "id, file_id, page, rects, color_id, text, note, created_at, source_key, ink, width, kind, hex, size";
+const putRow = (r: Row) => run(`INSERT OR REPLACE INTO highlights(${COLS}) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
+  [r.id, r.file_id, r.page, r.rects, r.color_id, r.text, r.note, r.created_at, r.source_key ?? null, r.ink, r.width, r.kind, r.hex, r.size]);
+const byPos = (a: Highlight, b: Highlight) => a.page - b.page || a.created_at - b.created_at;
+/** Rows that count as highlights (the Board, the garden, quizzes); handwriting and typing don't. */
+const countsAsHighlight = (rows: { kind: string | null }[]) => rows.some((r) => r.kind !== "pen" && r.kind !== "text");
+
+/** Keep a text box on its page: moved back inside, and never wider than the page. `view` is the page's [x0, y0, x1, y1]. */
+function clampBox([a, b, c, d]: Rect, [x0, y0, x1, y1]: number[]): Rect {
+  const w = Math.min(c - a, x1 - x0 - 16), h = d - b;
+  const left = Math.max(x0 + 8, Math.min(a, x1 - 8 - w));
+  const top = Math.min(y1 - 8, Math.max(d, y0 + 8 + Math.min(h, y1 - y0 - 16)));
+  return [left, top - h, left + w, top];
+}
+
+/** A function that keeps one identity but always runs the latest render's version (so memoized pages don't re-render). */
+function useStable<A extends unknown[], R>(f: (...a: A) => R) {
+  const r = useRef(f);
+  r.current = f;
+  return useCallback((...a: A) => r.current(...a), []);
+}
 
 export type Tool = "select" | "highlight" | "marker" | "pen" | "eraser" | "text";
 // The tool, colors and pen size stay picked when she opens the next PDF.
@@ -28,6 +55,29 @@ const MARKER_WIDTH = 12; // PDF points, about one line of text
 const INKS = ["#2b2130", "#1f3a8a", "#b8325e", "#0f7a5a", "#7a3db8", "#c2410c"];
 const SIZES: [number, string][] = [[1.6, "fine"], [2.5, "medium"], [4, "bold"]];
 const outlinePath = (o: number[][]) => (o.length ? "M" + o.map((p) => `${p[0].toFixed(1)} ${p[1].toFixed(1)}`).join(" L") + " Z" : "");
+
+// Outlines of pen strokes on screen, per stroke and zoom. A stroke never changes shape, so a page of
+// handwriting is outlined once instead of on every redraw.
+const penPaths = new Map<string, string>();
+function penPath(h: Highlight, i: number, vp: { convertToViewportPoint(x: number, y: number): number[] }, scale: number) {
+  const key = `${h.id}|${i}|${scale}`;
+  let d = penPaths.get(key);
+  if (d === undefined) {
+    const st = h.ink![i], pts: number[][] = [];
+    for (let j = 0; j + 1 < st.length; j += 3) { const [px, py] = vp.convertToViewportPoint(st[j], st[j + 1]); pts.push([px, py, st[j + 2] ?? 0.5]); }
+    d = outlinePath(getStroke(pts, penOptions((h.width ?? 2.5) * scale)));
+    if (penPaths.size > 30000) penPaths.clear();
+    penPaths.set(key, d);
+  }
+  return d;
+}
+
+/** [x, y, p, x, y, p, …] -> [[x, y, p], …] */
+function triples(v: number[]) {
+  const out: number[][] = [];
+  for (let i = 0; i + 2 < v.length; i += 3) out.push([v[i], v[i + 1], v[i + 2]]);
+  return out;
+}
 
 /** The text position under a point, if it's inside a page's text layer. */
 function caretAt(x: number, y: number): { node: Node; offset: number } | null {
@@ -56,20 +106,16 @@ function onStroke(h: Highlight, x: number, y: number, slop = 3) {
   });
 }
 
-/** Marker strokes drawn over a page (or a crop of one): PDF-space points to viewport pixels. */
-function Strokes({ hls, vp, colorOf, dy = 0, quiz, revealed }: {
+/** Marker and pen strokes drawn over a page (or a crop of one): PDF-space points to viewport pixels. */
+const Strokes = memo(function Strokes({ hls, vp, colorOf, dy = 0, quiz, revealed }: {
   hls: Highlight[]; vp: { convertToViewportPoint(x: number, y: number): number[]; width: number; height: number };
   colorOf: Map<number, string>; dy?: number; quiz?: boolean; revealed?: Set<string>;
 }) {
   const inked = hls.filter((h) => h.ink?.length && h.kind !== "pen");
   const pens = hls.filter((h) => h.ink?.length && h.kind === "pen");
   const scale = (vp as unknown as { scale: number }).scale ?? 1;
-  const penPaths = pens.flatMap((h) => h.ink!.map((st, i) => {
-    const pts: number[][] = [];
-    for (let j = 0; j + 1 < st.length; j += 3) { const [px, py] = vp.convertToViewportPoint(st[j], st[j + 1]); pts.push([px, py, st[j + 2] ?? 0.5]); }
-    return <path key={h.id + i} d={outlinePath(getStroke(pts, penOptions((h.width ?? 2.5) * scale)))} fill={h.hex ?? "#2b2130"} />;
-  }));
-  const pensSvg = penPaths.length > 0 && <svg className="strokes ink" width={vp.width} height={vp.height} style={{ top: -dy }} aria-hidden>{penPaths}</svg>;
+  const paths = pens.flatMap((h) => h.ink!.map((_, i) => <path key={h.id + i} d={penPath(h, i, vp, scale)} fill={h.hex ?? "#2b2130"} />));
+  const pensSvg = paths.length > 0 && <svg className="strokes ink" width={vp.width} height={vp.height} style={{ top: -dy }} aria-hidden>{paths}</svg>;
   if (!inked.length) return pensSvg || null;
   const line = (h: Highlight) => h.ink!.map((st, i) => {
     const pts: string[] = [];
@@ -86,7 +132,7 @@ function Strokes({ hls, vp, colorOf, dy = 0, quiz, revealed }: {
     {shown.length > 0 && <svg className="strokes" width={vp.width} height={vp.height} style={{ top: -dy }} aria-hidden>{shown.flatMap(line)}</svg>}
     {hidden.length > 0 && <svg className="strokes solid" width={vp.width} height={vp.height} style={{ top: -dy }} aria-hidden>{hidden.flatMap(line)}</svg>}
   </>;
-}
+});
 
 /** Grow a range to whole words, like a highlighter pen would. Returns true if it changed. */
 const WORD = /[\p{L}\p{N}'’_-]/u;
@@ -150,41 +196,86 @@ function PdfReader({ fileId, page: startPage, go }: { fileId: number; page?: num
   const [pen, setPenState] = useState<number | null>(lastPen);
   const [ink, setInkState] = useState(lastInk);
   const [size, setSizeState] = useState(lastSize);
+  const [editing, setEditing] = useState<Editing | null>(null);
   const setTool = (t: Tool) => { lastTool = t; setToolState(t); setPending(null); getSelection()?.removeAllRanges(); };
   const setPen = (c: number) => { lastPen = c; setPenState(c); };
-  const setInk = (c: string) => { lastInk = c; setInkState(c); };
+  // Ink and text size also restyle the box being typed in.
+  const setInk = (c: string) => { lastInk = c; setInkState(c); setEditing((ed) => ed && { ...ed, hex: c }); };
   const setSize = (w: number) => { lastSize = w; setSizeState(w); };
   const penColor = pen && cols.some((c) => c.id === pen) ? pen : cols[0]?.id;
-  // A stroke in progress: page, pen or marker, points in PDF space, and the same points in page pixels for
-  // drawing. Pen points carry pressure: [x, y, pressure, …].
-  const [draft, setDraft] = useState<{ page: number; kind: "marker" | "pen"; pdf: number[]; px: number[] } | null>(null);
+  // The stroke being drawn lives in a ref (a quick flick can lift before React re-renders); the state copy draws it.
+  const [draft, setDraft] = useState<Draft | null>(null);
+  const draftRef = useRef<Draft | null>(null);
+  // What the pointer that went down is doing. Only that pointer moves or ends it: a palm or a second
+  // finger landing or lifting mid-stroke is ignored.
   const drag = useRef<
-    | { kind: "highlight"; anchor: { node: Node; offset: number } }
-    | { kind: "stroke" | "erase"; page: number; el: HTMLElement }
+    | { id: number; kind: "highlight"; anchor: { node: Node; offset: number } | null }
+    | { id: number; kind: "stroke"; page: number; el: HTMLElement; pen: boolean }
+    | { id: number; kind: "erase"; page: number; el: HTMLElement }
     | null>(null);
-  const erased = useRef<Highlight[]>([]);
+  const erased = useRef<string[]>([]);
   // Undo/redo: each step is the rows before and after a change.
-  const undoStack = useRef<{ before: HighlightRow[]; after: HighlightRow[] }[]>([]);
-  const redoStack = useRef<{ before: HighlightRow[]; after: HighlightRow[] }[]>([]);
+  const undoStack = useRef<{ before: Row[]; after: Row[] }[]>([]);
+  const redoStack = useRef<{ before: Row[]; after: Row[] }[]>([]);
   const [, setHistoryTick] = useState(0);
   const [gen, setGen] = useState(0); // bumps when a note gets a new page and must be reopened
   const [textSize, setTextSizeState] = useState(lastTextSize);
-  const setTextSize = (n: number) => { lastTextSize = n; setTextSizeState(n); };
-  // The typed box being written: an existing one (id) or a new one (id null), with its box in PDF space.
-  const [editing, setEditing] = useState<{ id: string | null; page: number; rect: Rect; text: string; size: number; hex: string } | null>(null);
+  const setTextSize = (n: number) => { lastTextSize = n; setTextSizeState(n); setEditing((ed) => ed && { ...ed, size: n }); };
   const jumpTo = useRef<number | null>(null);
   const justDrew = useRef(false);
+  const hadEditor = useRef(false);
   const scroller = useRef<HTMLDivElement>(null);
   const lastInput = useRef(Date.now());
 
   const colorOf = useMemo(() => new Map(cols.map((c) => [c.id, c.hex])), [cols]);
-  const reloadHls = useCallback(async () => {
-    setHls((await q<HighlightRow>(`SELECT * FROM highlights WHERE file_id=$1 ORDER BY page, created_at`, [fileId])).map(parseHl));
+  // What's on screen is the database plus changes made here and still being written. A reload that
+  // started before one of our writes finished could miss it, so it reads again instead of dropping it.
+  const pendingAdds = useRef(new Map<string, Highlight>());
+  const pendingDels = useRef(new Set<string>());
+  const writes = useRef(0);
+  const reloadSeq = useRef(0);
+  const reloadHls = useCallback(async (): Promise<void> => {
+    const seq = ++reloadSeq.current, w = writes.current;
+    const rows = await q<HighlightRow>(`SELECT * FROM highlights WHERE file_id=$1 ORDER BY page, created_at`, [fileId]);
+    if (seq !== reloadSeq.current) return; // a newer reload is on its way
+    if (w !== writes.current) return reloadHls();
+    const list = rows.map(parseHl).filter((h) => !pendingDels.current.has(h.id) && !pendingAdds.current.has(h.id));
+    list.push(...pendingAdds.current.values());
+    setHls(pendingAdds.current.size ? list.sort(byPos) : list);
   }, [fileId]);
+
+  /** Add, replace and remove highlight rows: on screen at once, then in the database, then into the PDF. */
+  async function change(add: Row[], del: string[]) {
+    const hs = add.map(parseHl);
+    const gone = new Set([...del, ...hs.map((h) => h.id)]);
+    for (const h of hs) pendingAdds.current.set(h.id, h);
+    for (const id of del) pendingDels.current.add(id);
+    setHls((all) => (hs.length ? [...all.filter((h) => !gone.has(h.id)), ...hs].sort(byPos) : all.filter((h) => !gone.has(h.id))));
+    try {
+      for (const id of del) await run(`DELETE FROM highlights WHERE id=$1`, [id]);
+      for (const r of add) await putRow(r);
+    } finally {
+      for (const h of hs) pendingAdds.current.delete(h.id);
+      for (const id of del) pendingDels.current.delete(id);
+      writes.current++;
+    }
+    await markDirty(fileId);
+  }
+
+  // Pages only re-render when their own highlights change: unchanged pages keep the same array.
+  const lastByPage = useRef(new Map<number, Highlight[]>());
+  const byPage = useMemo(() => {
+    const m = new Map<number, Highlight[]>();
+    for (const h of hls) { const a = m.get(h.page); if (a) a.push(h); else m.set(h.page, [h]); }
+    for (const [p, a] of m) { const old = lastByPage.current.get(p); if (old && old.length === a.length && old.every((h, i) => h === a[i])) m.set(p, old); }
+    lastByPage.current = m;
+    return m;
+  }, [hls]);
   // Pick up highlights imported in the background (e.g. made in another app) and renamed colors.
   useEffect(() => {
     void reloadHls();
-    void colors().then(setCols);
+    // Same colors: keep the same array, so pages (and their drawings) don't all redraw for nothing.
+    void colors().then((n) => setCols((c) => (JSON.stringify(c) === JSON.stringify(n) ? c : n)));
   }, [v, reloadHls]);
 
   // Load the PDF and every page proxy (cheap; lets us lay out all pages before rendering any).
@@ -261,7 +352,8 @@ function PdfReader({ fileId, page: startPage, go }: { fileId: number; page?: num
     clearTimeout(saveProgress.current);
     saveProgress.current = window.setTimeout(() => {
       written.current = { page: n, seen: Math.max(seen, written.current.seen) };
-      run(`UPDATE files SET last_page=$2, max_page=max(max_page, $3) WHERE id=$1`, [fileId, n, seen]).then(changed);
+      // No changed(): nothing on screen shows progress while reading, and a reload of a big note isn't free.
+      void run(`UPDATE files SET last_page=$2, max_page=max(max_page, $3) WHERE id=$1`, [fileId, n, seen]);
     }, 800);
   }
   function onScroll() {
@@ -284,6 +376,8 @@ function PdfReader({ fileId, page: startPage, go }: { fileId: number; page?: num
     el.addEventListener("wheel", f, { passive: false });
     return () => el.removeEventListener("wheel", f);
   }, [mode, doc]);
+  // A resting palm plus a finger mustn't zoom while she writes.
+  usePinch(scroller, zoomRef, () => Date.now() - penAt.current < 1500, [mode, doc]);
 
   // Passive reading time: 30s ticks while the window is focused and she's been active recently.
   useEffect(() => {
@@ -316,38 +410,47 @@ function PdfReader({ fileId, page: startPage, go }: { fileId: number; page?: num
   }
   function onPointerDown(e: React.PointerEvent) {
     markPen(e);
+    lastInput.current = Date.now();
+    if (drag.current) return; // already drawing: a resting palm or another finger doesn't interrupt
     pointerDown.current = true;
     downWasPalm.current = isPalm(e);
-    lastInput.current = Date.now();
     justDrew.current = false;
+    // A tap away from the box being typed in just finishes it (see onPageClick). A resting palm doesn't.
+    hadEditor.current = editing !== null && !downWasPalm.current;
+    if (hadEditor.current) (document.activeElement as HTMLElement | null)?.blur?.();
+    // The eraser end of a stylus erases whatever tool is picked.
+    const eraserEnd = e.pointerType === "pen" && (e.button === 5 || (e.buttons & 32) !== 0);
+    const t: Tool = eraserEnd ? "eraser" : tool;
     // Highlighter, marker, pen and eraser: mouse and stylus draw, fingers keep scrolling.
-    if (mode !== "read" || tool === "select" || tool === "text" || e.pointerType === "touch" || e.button !== 0) return;
+    if (mode !== "read" || t === "select" || t === "text" || e.pointerType === "touch" || (e.button !== 0 && !eraserEnd)) return;
     const pageEl = (e.target as HTMLElement).closest<HTMLElement>("[data-page]");
-    if (!pageEl) return;
+    if (!pageEl || !pages[Number(pageEl.dataset.page) - 1]) return;
     e.preventDefault(); // no native text selection; we build it ourselves
     scroller.current?.setPointerCapture(e.pointerId);
     setPending(null);
     setActive(null);
-    if (tool === "highlight") {
-      const anchor = caretAt(e.clientX, e.clientY);
-      if (anchor) drag.current = { kind: "highlight", anchor };
-    } else if (tool === "eraser") {
-      drag.current = { kind: "erase", page: Number(pageEl.dataset.page), el: pageEl };
+    if (t === "highlight") {
+      // Starting in the margin is fine: the selection begins at the first text the pen reaches.
+      drag.current = { id: e.pointerId, kind: "highlight", anchor: caretAt(e.clientX, e.clientY) };
+    } else if (t === "eraser") {
+      drag.current = { id: e.pointerId, kind: "erase", page: Number(pageEl.dataset.page), el: pageEl };
       erased.current = [];
       eraseAt(e);
     } else {
-      drag.current = { kind: "stroke", page: Number(pageEl.dataset.page), el: pageEl };
+      drag.current = { id: e.pointerId, kind: "stroke", page: Number(pageEl.dataset.page), el: pageEl, pen: t === "pen" };
+      draftRef.current = null;
       addPoint(e);
     }
   }
   function onPointerMove(e: React.PointerEvent) {
     markPen(e);
     const d = drag.current;
-    if (!d) return;
+    if (!d || e.pointerId !== d.id) return;
     if (d.kind !== "highlight") return d.kind === "stroke" ? addPoint(e) : eraseAt(e);
     // Highlighter: select from where the pen went down to where it is now, snapped to words.
     const focus = caretAt(e.clientX, e.clientY);
     if (!focus) return;
+    if (!d.anchor) { d.anchor = focus; return; }
     const a = d.anchor;
     const before = a.node === focus.node ? a.offset <= focus.offset : !!(a.node.compareDocumentPosition(focus.node) & Node.DOCUMENT_POSITION_FOLLOWING);
     const range = document.createRange();
@@ -362,7 +465,7 @@ function PdfReader({ fileId, page: startPage, go }: { fileId: number; page?: num
     const d = drag.current;
     if (d?.kind !== "stroke") return;
     lastInput.current = Date.now(); // writing counts as studying
-    const kind: "pen" | "marker" = tool === "pen" ? "pen" : "marker";
+    const kind: "pen" | "marker" = d.pen ? "pen" : "marker";
     const box = d.el.getBoundingClientRect();
     const vp = pages[d.page - 1].getViewport({ scale });
     // Styluses report points faster than the screen draws; the in-between ones arrive coalesced.
@@ -374,17 +477,16 @@ function PdfReader({ fileId, page: startPage, go }: { fileId: number; page?: num
       const pr = +(ev.pointerType === "pen" && ev.pressure > 0 ? ev.pressure : 0.5).toFixed(2);
       return { x, y, px: +px.toFixed(1), py: +py.toFixed(1), pr };
     });
-    setDraft((cur) => {
-      const c = cur && cur.page === d.page && cur.kind === kind ? cur : { page: d.page, kind, pdf: [] as number[], px: [] as number[] };
-      const step = kind === "pen" ? 3 : 2;
-      const pdf = [...c.pdf], px = [...c.px];
-      for (const p of pts) {
-        const n = pdf.length;
-        if (n && Math.hypot(p.px - pdf[n - step], p.py - pdf[n - step + 1]) < (kind === "pen" ? 0.5 : 1.5)) continue; // skip jitter
-        if (kind === "pen") { pdf.push(p.px, p.py, p.pr); px.push(p.x, p.y, p.pr); } else { pdf.push(p.px, p.py); px.push(p.x, p.y); }
-      }
-      return pdf.length === c.pdf.length ? c : { ...c, pdf, px };
-    });
+    let c = draftRef.current;
+    if (!c || c.page !== d.page || c.kind !== kind) c = draftRef.current = { page: d.page, kind, pdf: [], px: [] };
+    const step = kind === "pen" ? 3 : 2, before = c.pdf.length;
+    const { pdf, px } = c;
+    for (const p of pts) {
+      const n = pdf.length;
+      if (n && Math.hypot(p.px - pdf[n - step], p.py - pdf[n - step + 1]) < (kind === "pen" ? 0.5 : 1.5)) continue; // skip jitter
+      if (kind === "pen") { pdf.push(p.px, p.py, p.pr); px.push(p.x, p.y, p.pr); } else { pdf.push(p.px, p.py); px.push(p.x, p.y); }
+    }
+    if (pdf.length !== before) setDraft({ ...c });
   }
 
   /** Eraser: whatever it touches (ink, marker, highlight) disappears; committed on lift so undo can bring it back. */
@@ -393,23 +495,25 @@ function PdfReader({ fileId, page: startPage, go }: { fileId: number; page?: num
     if (d?.kind !== "erase") return;
     const box = d.el.getBoundingClientRect();
     const [x, y] = pages[d.page - 1].getViewport({ scale }).convertToPdfPoint(e.clientX - box.left, e.clientY - box.top);
-    const hit = hls.filter((h) => h.page === d.page && !erased.current.includes(h) &&
+    const hit = (byPage.get(d.page) ?? NONE).filter((h) => !erased.current.includes(h.id) &&
       (h.ink?.length ? onStroke(h, x, y, 4) : h.rects.some(([a, b, c, dd]) => x >= a && x <= c && y >= b && y <= dd)));
     if (!hit.length) return;
-    erased.current.push(...hit);
-    setHls((all) => all.filter((h) => !hit.includes(h)));
+    const ids = new Set(hit.map((h) => h.id));
+    for (const id of ids) { erased.current.push(id); pendingDels.current.add(id); } // a reload mid-rub mustn't bring them back
+    setHls((all) => all.filter((h) => !ids.has(h.id)));
   }
   function onPointerUp(e: React.PointerEvent) {
     markPen(e);
-    pointerDown.current = false;
     const d = drag.current;
+    if (d && e.pointerId !== d.id) return; // a palm or another finger lifting doesn't end the stroke
+    pointerDown.current = false;
     drag.current = null;
     if (downWasPalm.current) return;
     if (d?.kind === "stroke") return void finishStroke();
     if (d?.kind === "erase") {
       const gone = erased.current;
       erased.current = [];
-      if (gone.length) { justDrew.current = true; void removeRows(gone.map((h) => h.id)); }
+      if (gone.length) { justDrew.current = true; void removeRows(gone); }
       return;
     }
     if (d?.kind === "highlight") {
@@ -419,9 +523,15 @@ function PdfReader({ fileId, page: startPage, go }: { fileId: number; page?: num
     }
     if (tool === "select") offerSelection();
   }
+  function onPointerCancel(e: React.PointerEvent) {
+    const d = drag.current;
+    if (!d) { pointerDown.current = false; return; }
+    if (e.pointerId === d.id) onPointerUp(e); // keep what was drawn rather than lose it
+  }
 
   async function finishStroke() {
-    const st = draft;
+    const st = draftRef.current;
+    draftRef.current = null;
     setDraft(null);
     if (!st) return;
     const step = st.kind === "pen" ? 3 : 2, n = st.px.length;
@@ -429,43 +539,35 @@ function PdfReader({ fileId, page: startPage, go }: { fileId: number; page?: num
     if (st.kind === "marker" && (n < 4 || (Math.hypot(st.px[0] - st.px[n - 2], st.px[1] - st.px[n - 1]) < 4 && n < 8))) return;
     if (st.kind === "pen" && n < 3) return;
     justDrew.current = true;
-    const xs = st.pdf.filter((_, i) => i % step === 0), ys = st.pdf.filter((_, i) => i % step === 1);
-    const w = st.kind === "pen" ? size : MARKER_WIDTH;
-    const bbox: Rect = [Math.min(...xs) - w, Math.min(...ys) - w, Math.max(...xs) + w, Math.max(...ys) + w];
-    const id = crypto.randomUUID();
-    await run(
-      `INSERT INTO highlights(id, file_id, page, rects, color_id, text, note, created_at, ink, width, kind, hex) VALUES ($1,$2,$3,$4,$5,'','',$6,$7,$8,$9,$10)`,
-      [id, fileId, st.page, JSON.stringify([bbox]), st.kind === "pen" ? cols[0]?.id : penColor, Date.now(), JSON.stringify([st.pdf]), w,
-        st.kind === "pen" ? "pen" : null, st.kind === "pen" ? ink : null],
-    );
-    await record([], await rowsOf([id]));
-    await markDirty(fileId);
-    if (st.kind === "marker") { await logActivity(fileId, { highlights: 1 }); sound.pop(); }
-    await reloadHls();
-    changed();
+    let x1 = Infinity, y1 = Infinity, x2 = -Infinity, y2 = -Infinity;
+    for (let i = 0; i + 1 < st.pdf.length; i += step) {
+      x1 = Math.min(x1, st.pdf[i]); x2 = Math.max(x2, st.pdf[i]); y1 = Math.min(y1, st.pdf[i + 1]); y2 = Math.max(y2, st.pdf[i + 1]);
+    }
+    const pen = st.kind === "pen", w = pen ? size : MARKER_WIDTH;
+    const row: Row = {
+      id: crypto.randomUUID(), file_id: fileId, page: st.page, rects: JSON.stringify([[x1 - w, y1 - w, x2 + w, y2 + w]]),
+      color_id: (pen ? cols[0]?.id : penColor) ?? 1, text: "", note: "", created_at: Date.now(), source_key: null,
+      ink: JSON.stringify([st.pdf]), width: w, kind: pen ? "pen" : null, hex: pen ? ink : null, size: null,
+    };
+    // Undo steps are recorded in the order she made them. The stroke shows in the same frame the draft goes, so it never blinks.
+    record([], [row]);
+    await change([row], []);
+    if (!pen) { await logActivity(fileId, { highlights: 1 }); sound.pop(); changed(); }
   }
 
   // ---------- undo / redo ----------
-  const COLS = "id, file_id, page, rects, color_id, text, note, created_at, source_key, ink, width, kind, hex, size";
   const rowsOf = async (ids: string[]) =>
-    ids.length ? q<HighlightRow>(`SELECT ${COLS} FROM highlights WHERE id IN (${ids.map((_, i) => `$${i + 1}`).join(",")})`, ids) : [];
-  async function record(before: HighlightRow[], after: HighlightRow[]) {
+    ids.length ? q<Row>(`SELECT ${COLS} FROM highlights WHERE id IN (${ids.map((_, i) => `$${i + 1}`).join(",")})`, ids) : [];
+  function record(before: Row[], after: Row[]) {
     undoStack.current.push({ before, after });
     if (undoStack.current.length > 200) undoStack.current.shift();
     redoStack.current = [];
     setHistoryTick((t) => t + 1);
   }
   /** Make the database match `to`, given it currently matches `from`. */
-  async function apply(from: HighlightRow[], to: HighlightRow[]) {
-    for (const r of from) if (!to.some((t) => t.id === r.id)) await run(`DELETE FROM highlights WHERE id=$1`, [r.id]);
-    for (const r of to) {
-      const v = r as HighlightRow & { source_key?: string | null };
-      await run(`INSERT OR REPLACE INTO highlights(${COLS}) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
-        [v.id, v.file_id, v.page, v.rects, v.color_id, v.text, v.note, v.created_at, v.source_key ?? null, v.ink, v.width, v.kind, v.hex, v.size]);
-    }
-    await markDirty(fileId);
-    await reloadHls();
-    changed();
+  async function apply(from: Row[], to: Row[]) {
+    await change(to, from.filter((r) => !to.some((t) => t.id === r.id)).map((r) => r.id));
+    if (countsAsHighlight(from) || countsAsHighlight(to)) changed();
   }
   async function undo() {
     const step = undoStack.current.pop();
@@ -483,39 +585,38 @@ function PdfReader({ fileId, page: startPage, go }: { fileId: number; page?: num
   }
   async function removeRows(ids: string[]) {
     const before = await rowsOf(ids);
-    for (const id of ids) await run(`DELETE FROM highlights WHERE id=$1`, [id]);
-    await record(before, []);
-    await markDirty(fileId);
-    await reloadHls();
-    changed();
+    record(before, []);
+    await change([], ids);
+    if (countsAsHighlight(before)) changed();
   }
 
-  /** Save the box being typed: create, update, or remove it if she cleared all the text. */
-  async function commitText(text: string, rect: Rect) {
-    const ed = editing;
-    setEditing(null);
-    if (!ed) return;
+  /** Save a typed box: create it, update it, or remove it if she cleared all the text. */
+  const commitText = useStable(async (ed: Editing, text: string, rect: Rect) => {
+    setEditing((cur) => (cur === ed ? null : cur));
     const words = text.replace(/\s+$/, "");
+    const view = pages[ed.page - 1]?.view;
+    if (view) rect = clampBox(rect, view);
     if (ed.id === null) {
       if (!words.trim()) return;
-      const id = crypto.randomUUID();
-      await run(
-        `INSERT INTO highlights(id, file_id, page, rects, color_id, text, note, created_at, kind, hex, size) VALUES ($1,$2,$3,$4,$5,$6,'',$7,'text',$8,$9)`,
-        [id, fileId, ed.page, JSON.stringify([rect]), cols[0]?.id, words, Date.now(), ed.hex, ed.size],
-      );
-      await record([], await rowsOf([id]));
+      const row: Row = {
+        id: crypto.randomUUID(), file_id: fileId, page: ed.page, rects: JSON.stringify([rect]), color_id: cols[0]?.id ?? 1, text: words,
+        note: "", created_at: Date.now(), source_key: null, ink: null, width: null, kind: "text", hex: ed.hex, size: ed.size,
+      };
+      record([], [row]);
+      await change([row], []);
     } else if (!words.trim()) {
-      return removeRows([ed.id]);
+      await removeRows([ed.id]);
     } else {
-      const before = await rowsOf([ed.id]);
-      if (before[0]?.text === words && before[0]?.rects === JSON.stringify([rect])) return;
-      await run(`UPDATE highlights SET text=$2, rects=$3 WHERE id=$1`, [ed.id, words, JSON.stringify([rect])]);
-      await record(before, await rowsOf([ed.id]));
+      const [before] = await rowsOf([ed.id]);
+      if (!before) return;
+      const old = (JSON.parse(before.rects) as Rect[])[0];
+      // Opening a box and leaving it alone isn't a change (its measured height can differ a hair at another zoom).
+      if (before.text === words && before.hex === ed.hex && before.size === ed.size && old && [0, 2, 3].every((i) => Math.abs(old[i] - rect[i]) < 0.5)) return;
+      const after = { ...before, text: words, rects: JSON.stringify([rect]), hex: ed.hex, size: ed.size };
+      record([before], [after]);
+      await change([after], []);
     }
-    await markDirty(fileId);
-    await reloadHls();
-    changed();
-  }
+  });
 
   async function addPage() {
     if (!(await addNotePage(fileId))) return;
@@ -585,23 +686,17 @@ function PdfReader({ fileId, page: startPage, go }: { fileId: number; page?: num
   }
 
   async function saveParts(parts: Pending["parts"], colorId: number, at: { x: number; y: number }) {
-    const ids: string[] = [];
-    for (const p of parts) {
-      const id = crypto.randomUUID();
-      ids.push(id);
-      await run(
-        `INSERT INTO highlights(id, file_id, page, rects, color_id, text, note, created_at) VALUES ($1,$2,$3,$4,$5,$6,'',$7)`,
-        [id, fileId, p.page, JSON.stringify(p.rects), colorId, p.text, Date.now()],
-      );
-    }
-    await record([], await rowsOf(ids));
-    await markDirty(fileId);
-    await logActivity(fileId, { highlights: 1 });
+    const rows: Row[] = parts.map((p) => ({
+      id: crypto.randomUUID(), file_id: fileId, page: p.page, rects: JSON.stringify(p.rects), color_id: colorId, text: p.text,
+      note: "", created_at: Date.now(), source_key: null, ink: null, width: null, kind: null, hex: null, size: null,
+    }));
     getSelection()?.removeAllRanges();
     sparkle(at.x, at.y, colorOf.get(colorId));
     sound.pop();
-    setFresh(new Set(ids));
-    await reloadHls();
+    setFresh(new Set(rows.map((r) => r.id)));
+    record([], rows);
+    await change(rows, []);
+    await logActivity(fileId, { highlights: 1 });
     changed();
   }
 
@@ -632,19 +727,20 @@ function PdfReader({ fileId, page: startPage, go }: { fileId: number; page?: num
 
   // ---------- clicking existing highlights (hit-test; highlights sit under the text layer) ----------
 
-  function onPageClick(e: React.MouseEvent, n: number) {
+  const onPageClick = useStable((e: React.MouseEvent, n: number) => {
     if (justDrew.current) { justDrew.current = false; return; }
-    if (downWasPalm.current || getSelection()?.isCollapsed === false) return;
+    if (hadEditor.current) { hadEditor.current = false; return; } // that tap finished the box being typed in
+    if (downWasPalm.current || getSelection()?.isCollapsed === false || !pages[n - 1]) return;
     setPending(null);
     const box = (e.currentTarget as HTMLElement).getBoundingClientRect();
     const [x, y] = pages[n - 1].getViewport({ scale }).convertToPdfPoint(e.clientX - box.left, e.clientY - box.top);
-    // Newest first: it's drawn on top where highlights overlap.
     if (tool === "pen" || tool === "eraser") return;
     if (tool === "text" && mode === "read") {
-      // Start a new box with its top-left where she tapped.
-      setEditing({ id: null, page: n, rect: [x, y - textSize * 1.5, x + 240, y], text: "", size: textSize, hex: ink });
+      // Start a new box with its top-left where she tapped (kept on the page near an edge).
+      setEditing({ id: null, page: n, rect: clampBox([x, y - textSize * 1.5, x + 240, y], pages[n - 1].view), text: "", size: textSize, hex: ink });
       return;
     }
+    // Newest first: it's drawn on top where highlights overlap.
     const hit = [...hls].reverse().find((h) => h.page === n && h.kind !== "pen" && h.kind !== "text" &&
       (h.ink?.length ? onStroke(h, x, y) : h.rects.some(([a, b, c, d]) => x >= a && x <= c && y >= b && y <= d)));
     if (!hit) { setActive(null); return; }
@@ -656,15 +752,16 @@ function PdfReader({ fileId, page: startPage, go }: { fileId: number; page?: num
       return;
     }
     setActive({ id: hit.id, x: Math.max(8, Math.min(e.clientX, innerWidth - 262)), y: e.clientY + 12 });
-  }
+  });
+  const editText = useStable((h: Highlight) =>
+    setEditing({ id: h.id, page: h.page, rect: h.rects[0], text: h.text, size: h.size ?? 16, hex: h.hex ?? INKS[0] }));
 
   async function updateHl(id: string, patch: { color_id?: number; note?: string }) {
-    const before = await rowsOf([id]);
-    if (patch.color_id !== undefined) await run(`UPDATE highlights SET color_id=$2 WHERE id=$1`, [id, patch.color_id]);
-    if (patch.note !== undefined) await run(`UPDATE highlights SET note=$2 WHERE id=$1`, [id, patch.note]);
-    await record(before, await rowsOf([id]));
-    await markDirty(fileId);
-    await reloadHls();
+    const [before] = await rowsOf([id]);
+    if (!before) return;
+    const after = { ...before, ...patch };
+    record([before], [after]);
+    await change([after], []);
     changed();
   }
 
@@ -714,19 +811,20 @@ function PdfReader({ fileId, page: startPage, go }: { fileId: number; page?: num
                 <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="m15 14 5-5-5-5M20 9H9a5 5 0 0 0 0 10h3" /></svg>
               </button>
             </div>
-            {tool === "text" && (
-              <div className="pens">
+            {(tool === "text" || editing) && (
+              // Pressing these keeps the typing going (no focus change), and restyles the box being typed in.
+              <div className="pens" onMouseDown={(e) => e.preventDefault()}>
                 {INKS.map((c, i) => (
-                  <button key={c} className="swatch small" style={{ background: c }} aria-pressed={ink === c} title={`Text color ${i + 1}`} aria-label={`Text color ${i + 1}`} onClick={() => setInk(c)} />
+                  <button key={c} className="swatch small" style={{ background: c }} aria-pressed={(editing?.hex ?? ink) === c} title={`Text color ${i + 1}`} aria-label={`Text color ${i + 1}`} onClick={() => setInk(c)} />
                 ))}
                 {TEXT_SIZES.map(([n, label]) => (
-                  <button key={label} className="nib" aria-pressed={textSize === n} title={`${label} text`} aria-label={`${label} text`} onClick={() => setTextSize(n)}>
+                  <button key={label} className="nib" aria-pressed={(editing?.size ?? textSize) === n} title={`${label} text`} aria-label={`${label} text`} onClick={() => setTextSize(n)}>
                     <b style={{ fontSize: 8 + n / 3 }}>A</b>
                   </button>
                 ))}
               </div>
             )}
-            {tool === "pen" && (
+            {tool === "pen" && !editing && (
               <div className="pens">
                 {INKS.map((c, i) => (
                   <button key={c} className="swatch small" style={{ background: c }} aria-pressed={ink === c} title={`Ink ${i + 1}`} aria-label={`Ink color ${i + 1}`} onClick={() => setInk(c)} />
@@ -771,17 +869,17 @@ function PdfReader({ fileId, page: startPage, go }: { fileId: number; page?: num
           </div>
         ) : (
           <div className={`pages ${mode === "quiz" ? "cloze" : ""} tool-${mode === "read" ? tool : "select"}`} ref={scroller} onScroll={onScroll}
-            onPointerDown={onPointerDown} onPointerUp={onPointerUp} onPointerMove={onPointerMove}
-            onPointerCancel={() => { pointerDown.current = false; drag.current = null; setDraft(null); }}>
+            onPointerDown={onPointerDown} onPointerUp={onPointerUp} onPointerMove={onPointerMove} onPointerCancel={onPointerCancel}>
             {!pages.length && <div className="empty"><p className="hand">opening…</p></div>}
-            {doc && scale > 0 && pages.map((p, i) => (
-              <PdfPage key={i} doc={doc} page={p} n={i + 1} scale={scale} root={scroller}
-                hls={hls.filter((h) => h.page === i + 1)} colorOf={colorOf} mode={mode} revealed={revealed} fresh={fresh}
-                editing={editing?.page === i + 1 ? editing : null} onEditText={(h) => setEditing({ id: h.id, page: h.page, rect: h.rects[0], text: h.text, size: h.size ?? 16, hex: h.hex ?? INKS[0] })}
-                onCommitText={commitText} canEditText={tool === "select" || tool === "text" || tool === "highlight"}
-                draft={draft?.page === i + 1 ? draft : null} draftColor={draft?.kind === "pen" ? ink : colorOf.get(penColor ?? 0)} draftWidth={draft?.kind === "pen" ? size : MARKER_WIDTH}
-                onClick={onPageClick} />
-            ))}
+            {doc && scale > 0 && pages.map((p, i) => {
+              const d = draft?.page === i + 1 ? draft : null;
+              return <PdfPage key={i} doc={doc} page={p} n={i + 1} scale={scale} root={scroller}
+                hls={byPage.get(i + 1) ?? NONE} colorOf={colorOf} mode={mode} revealed={revealed} fresh={fresh}
+                editing={editing?.page === i + 1 ? editing : null} onEditText={editText} onCommitText={commitText}
+                canEditText={mode === "read" && (tool === "select" || tool === "text" || tool === "highlight")}
+                draft={d} draftColor={d ? (d.kind === "pen" ? ink : colorOf.get(penColor ?? 0)) : undefined} draftWidth={d?.kind === "pen" ? size : MARKER_WIDTH}
+                onClick={onPageClick} />;
+            })}
             {file?.paper && pages.length > 0 && mode === "read" && (
               <button className="add-page" onClick={() => void addPage()}>＋ Add a page</button>
             )}
@@ -831,11 +929,13 @@ export function HighlightPop({ hl, cols, at, onColor, onNote, onDelete, onClose 
   const [note, setNote] = useState(hl.note);
   const latest = useRef(note);
   latest.current = note;
+  const saved = useRef(hl.note);
   const deleted = useRef(false);
-  // Save the note however the popover closes: Done, Esc, clicking elsewhere, or leaving the PDF.
-  useEffect(() => () => { if (!deleted.current && latest.current !== hl.note) onNote(latest.current); },
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    []);
+  const save = () => { if (!deleted.current && latest.current !== saved.current) { saved.current = latest.current; onNote(latest.current); } };
+  // Save the note however the popover closes: Done, Esc, clicking elsewhere, leaving the PDF, closing the app.
+  const saveRef = useRef(save);
+  saveRef.current = save;
+  useEffect(() => () => saveRef.current(), []);
   return (
     <div className="pop" style={{ left: at.x, top: Math.min(at.y, innerHeight - 220), width: 250 }}>
       <div className="swatches">
@@ -843,6 +943,8 @@ export function HighlightPop({ hl, cols, at, onColor, onNote, onDelete, onClose 
       </div>
       <textarea className="field" placeholder="Add a note…" value={note} autoFocus maxLength={2000}
         onChange={(e) => setNote(e.target.value)}
+        // Focus moving to this popover's own buttons (a color, Delete) isn't leaving it.
+        onBlur={(e) => { if (!e.currentTarget.closest(".pop")?.contains(e.relatedTarget as Node | null)) save(); }}
         onKeyDown={(e) => {
           if (e.key === "Escape") onClose();
           if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) onClose();
@@ -859,12 +961,13 @@ export function HighlightPop({ hl, cols, at, onColor, onNote, onDelete, onClose 
 // Past ~16 megapixels a single canvas gets heavy (and at high zoom can exceed what the webview allows).
 const MAX_CANVAS_PIXELS = 16e6;
 
-function PdfPage({ doc, page, n, scale, root, hls, colorOf, mode, revealed, fresh, draft, draftColor, draftWidth, onClick, editing, onEditText, onCommitText, canEditText }: {
+// Memoized: while she writes, only the page with the stroke in progress re-renders.
+const PdfPage = memo(function PdfPage({ doc, page, n, scale, root, hls, colorOf, mode, revealed, fresh, draft, draftColor, draftWidth, onClick, editing, onEditText, onCommitText, canEditText }: {
   doc: PDFDocumentProxy; page: PDFPageProxy; n: number; scale: number; root: React.RefObject<HTMLDivElement | null>;
   hls: Highlight[]; colorOf: Map<number, string>; mode: Mode; revealed: Set<string>; fresh: Set<string>;
-  draft: { kind: "pen" | "marker"; px: number[] } | null; draftColor?: string; draftWidth: number;
-  editing: { id: string | null; rect: Rect; text: string; size: number; hex: string } | null;
-  onEditText: (h: Highlight) => void; onCommitText: (text: string, rect: Rect) => void; canEditText: boolean;
+  draft: Draft | null; draftColor?: string; draftWidth: number;
+  editing: Editing | null;
+  onEditText: (h: Highlight) => void; onCommitText: (ed: Editing, text: string, rect: Rect) => void; canEditText: boolean;
   onClick: (e: React.MouseEvent, n: number) => void;
 }) {
   const vp = useMemo(() => page.getViewport({ scale }), [page, scale]);
@@ -917,7 +1020,7 @@ function PdfPage({ doc, page, n, scale, root, hls, colorOf, mode, revealed, fres
         )}
         {draft && draft.kind === "pen" && (
           <svg className="strokes ink" width={vp.width} height={vp.height} aria-hidden>
-            <path d={outlinePath(getStroke(draft.px.reduce<number[][]>((a, v, i) => (i % 3 ? (a[a.length - 1].push(v), a) : [...a, [v]]), []), penOptions(draftWidth * scale)))} fill={draftColor} />
+            <path d={outlinePath(getStroke(triples(draft.px), penOptions(draftWidth * scale)))} fill={draftColor} />
           </svg>
         )}
         {hls.filter((h) => !h.ink?.length && h.kind !== "text").flatMap((h) => h.rects.map((r, i) => {
@@ -934,22 +1037,21 @@ function PdfPage({ doc, page, n, scale, root, hls, colorOf, mode, revealed, fres
               onPointerDown={(e) => e.stopPropagation()} onClick={(e) => { e.stopPropagation(); onEditText(h); }}>{h.text}</div>
           );
         })}
-        {editing && <TextEditor key={editing.id ?? "new"} ed={editing} vp={vp} scale={scale} onDone={onCommitText} />}
+        {editing && <TextEditor key={editing.id ?? "new"} ed={editing} vp={vp} scale={scale} view={page.view} onDone={onCommitText} />}
       </div>
       <div className="textLayer" ref={text}
         onMouseDown={(e) => e.currentTarget.classList.add("selecting")}
         onMouseUp={(e) => e.currentTarget.classList.remove("selecting")} />
     </div>
   );
-}
+});
 
 /**
  * Typing on the page: a textarea that grows with its text. Drag the dotted handle to move the box and
  * its right edge to resize it; Esc or clicking elsewhere saves.
  */
-function TextEditor({ ed, vp, scale, onDone }: {
-  ed: { rect: Rect; text: string; size: number; hex: string };
-  vp: PageViewportLike; scale: number; onDone: (text: string, rect: Rect) => void;
+function TextEditor({ ed, vp, scale, view, onDone }: {
+  ed: Editing; vp: PageViewportLike; scale: number; view: number[]; onDone: (ed: Editing, text: string, rect: Rect) => void;
 }) {
   const [text, setText] = useState(ed.text);
   const [rect, setRect] = useState<Rect>(ed.rect);
@@ -960,19 +1062,32 @@ function TextEditor({ ed, vp, scale, onDone }: {
     if (done.current) return;
     done.current = true;
     const h = (area.current?.scrollHeight ?? b.height) + 4;
-    onDone(text, toPdfRect(vp, b.left, b.top, b.width, h));
+    onDone(ed, text, toPdfRect(vp, b.left, b.top, b.width, h));
   };
+  // Leaving some other way (Back, another PDF, a mode switch) still keeps what she typed.
+  const finishRef = useRef(finish);
+  finishRef.current = finish;
+  useEffect(() => () => finishRef.current(), []);
   useEffect(() => { const a = area.current!; a.focus(); a.setSelectionRange(a.value.length, a.value.length); }, []);
-  useEffect(() => { const a = area.current!; a.style.height = "0"; a.style.height = a.scrollHeight + "px"; }, [text, scale, rect]);
-  // Drag helpers: moving shifts the whole box, resizing changes its width (both in PDF points).
+  useEffect(() => { const a = area.current!; a.style.height = "0"; a.style.height = a.scrollHeight + "px"; }, [text, scale, rect, ed.size]);
+  // Drag helpers: moving shifts the whole box, resizing changes its width (both in PDF points). It stays on the page.
   const dragWith = (e: React.PointerEvent, apply: (dx: number, dy: number, r: Rect) => Rect) => {
     e.preventDefault();
     e.stopPropagation();
-    const start = { x: e.clientX, y: e.clientY, r: rect };
-    const move = (ev: PointerEvent) => setRect(apply((ev.clientX - start.x) / scale, (ev.clientY - start.y) / scale, start.r));
-    const up = () => { removeEventListener("pointermove", move); removeEventListener("pointerup", up); area.current?.focus(); };
+    const start = { x: e.clientX, y: e.clientY, r: rect, id: e.pointerId };
+    const move = (ev: PointerEvent) => {
+      if (ev.pointerId === start.id) setRect(clampBox(apply((ev.clientX - start.x) / scale, (ev.clientY - start.y) / scale, start.r), view));
+    };
+    const up = (ev: PointerEvent) => {
+      if (ev.pointerId !== start.id) return;
+      removeEventListener("pointermove", move);
+      removeEventListener("pointerup", up);
+      removeEventListener("pointercancel", up);
+      area.current?.focus();
+    };
     addEventListener("pointermove", move);
     addEventListener("pointerup", up);
+    addEventListener("pointercancel", up);
   };
   return (
     <div className="tbox editing" style={{ left: b.left, top: b.top, width: b.width }} onPointerDown={(e) => e.stopPropagation()} onClick={(e) => e.stopPropagation()}>

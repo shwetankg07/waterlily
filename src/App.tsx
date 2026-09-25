@@ -54,7 +54,12 @@ export default function App() {
     })().catch((e) => setReady(`The app couldn't start: ${e}`));
     // Write pending highlights into PDFs before the window closes, but never hang the close:
     // anything unfinished is still marked dirty and completes on the next launch.
-    const un = getCurrentWindow().onCloseRequested(() => Promise.race([flushSaves(), new Promise<void>((r) => setTimeout(r, 8000))]));
+    const un = getCurrentWindow().onCloseRequested(async () => {
+      // A text box or highlight note still being typed in saves when it loses focus; give that a moment.
+      (document.activeElement as HTMLElement | null)?.blur?.();
+      await new Promise((r) => setTimeout(r, 150));
+      await Promise.race([flushSaves(), new Promise<void>((r) => setTimeout(r, 8000))]);
+    });
     return () => { un.then((f) => f()); };
   }, []);
 

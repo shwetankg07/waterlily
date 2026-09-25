@@ -3,7 +3,7 @@ import { q, run, logActivity, parseHl, colors, type Color, type FileRow, type Hi
 import { imageUrl, displayName, changed } from "./lib";
 import type { Rect } from "./pdfcore";
 import { sound, sparkle, toast } from "./fx";
-import { useVersion } from "./ui";
+import { useVersion, usePinch } from "./ui";
 import { HighlightPop, type Active } from "./Reader";
 import type { Go } from "./App";
 
@@ -29,7 +29,8 @@ export default function ImageReader({ fileId, go }: { fileId: number; page?: num
   const [panel, setPanel] = useState(true);
   const box = useRef<HTMLDivElement>(null);
   const scroller = useRef<HTMLDivElement>(null);
-  const start = useRef<{ x: number; y: number } | null>(null);
+  // Where the box being dragged began, and which pointer is dragging it (a palm landing or lifting doesn't count).
+  const start = useRef<{ x: number; y: number; id: number } | null>(null);
   const lastInput = useRef(Date.now());
   const penAt = useRef(0);
   const lastTouchPalm = useRef(false);
@@ -84,6 +85,7 @@ export default function ImageReader({ fileId, go }: { fileId: number; page?: num
     el.addEventListener("wheel", f, { passive: false });
     return () => el.removeEventListener("wheel", f);
   }, []);
+  usePinch(scroller, zoomRef, () => Date.now() - penAt.current < 1500, []);
 
   // Passive reading time, same rule as PDFs.
   useEffect(() => {
@@ -109,22 +111,22 @@ export default function ImageReader({ fileId, go }: { fileId: number; page?: num
       lastTouchPalm.current = e.width * e.height > 40 * 40 || Date.now() - penAt.current < 1500;
       return; // fingers scroll
     }
-    if (e.button !== 0) return;
-    start.current = at(e);
+    if (e.button !== 0 || start.current) return;
+    start.current = { ...at(e), id: e.pointerId };
     e.currentTarget.setPointerCapture(e.pointerId);
   }
   function onPointerMove(e: React.PointerEvent) {
     if (e.pointerType === "pen") penAt.current = Date.now();
     const s = start.current;
-    if (!s || mode !== "read") return;
+    if (!s || s.id !== e.pointerId || mode !== "read") return;
     const p = at(e);
     setDraft({ x1: s.x, y1: s.y, x2: p.x, y2: p.y });
   }
   function onPointerUp(e: React.PointerEvent) {
     const s = start.current;
+    if (!s || s.id !== e.pointerId) return;
     start.current = null;
     setDraft(null);
-    if (!s) return;
     const p = at(e);
     if (mode !== "read" || (Math.abs(p.x - s.x) * W < 6 && Math.abs(p.y - s.y) * H < 6)) return tap(e, p);
     const rect: Rect = [Math.min(s.x, p.x), Math.min(s.y, p.y), Math.max(s.x, p.x), Math.max(s.y, p.y)];
@@ -220,7 +222,7 @@ export default function ImageReader({ fileId, go }: { fileId: number; page?: num
           {src && (
             <div className={`imgpage ${mode}`} ref={box} style={natural ? { width: W, height: H } : { visibility: "hidden" }}
               onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp}
-              onPointerCancel={() => { start.current = null; setDraft(null); }} onClick={onClick}>
+              onPointerCancel={(e) => { if (start.current?.id === e.pointerId) { start.current = null; setDraft(null); } }} onClick={onClick}>
               <img src={src} alt={file ? displayName(file.rel) : ""} draggable={false} onLoad={(e) => fit(e.currentTarget)} />
               <div className="hl-layer">
                 {hls.flatMap((h) => h.rects.map((r, i) => (

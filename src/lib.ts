@@ -53,12 +53,58 @@ export function openPdf(bytes: Uint8Array) {
   }).promise;
 }
 
+// pdf-lib work (rewriting a big note or textbook can take a second) runs in a worker, so the page never
+// freezes mid-stroke. If the worker can't start, the same functions run here instead.
+const heavy = { writeHighlights, readHighlights, addPaperPage };
+type Heavy = typeof heavy;
+type Call = { fn: keyof Heavy; args: unknown[]; ok: (v: never) => void; fail: (e: unknown) => void; timer: number };
+let pdfWorker: Worker | null | undefined; // undefined: not started yet; null: unavailable
+const calls = new Map<number, Call>();
+let callSeq = 0;
+const here = (fn: keyof Heavy, args: unknown[]) => (heavy[fn] as (...a: unknown[]) => Promise<never>)(...args);
+function stopWorker(why: string, rerun: boolean) {
+  pdfWorker?.terminate();
+  pdfWorker = rerun ? null : undefined;
+  for (const [id, c] of calls) {
+    calls.delete(id);
+    clearTimeout(c.timer);
+    if (rerun) here(c.fn, c.args).then(c.ok, c.fail);
+    else c.fail(new Error(why));
+  }
+}
+function offThread<K extends keyof Heavy>(fn: K, ...args: Parameters<Heavy[K]>): ReturnType<Heavy[K]> {
+  if (pdfWorker === undefined) {
+    try {
+      pdfWorker = new Worker(new URL("./pdfworker.ts", import.meta.url), { type: "module" });
+      pdfWorker.onmessage = ({ data }) => {
+        const c = calls.get(data.id);
+        if (!c) return;
+        calls.delete(data.id);
+        clearTimeout(c.timer);
+        if (data.error) c.fail(Object.assign(new Error(data.error.message), { name: data.error.name }));
+        else c.ok(data.result as never);
+      };
+      pdfWorker.onerror = () => stopWorker("", true);
+    } catch {
+      pdfWorker = null;
+    }
+  }
+  if (!pdfWorker) return here(fn, args) as ReturnType<Heavy[K]>;
+  const id = ++callSeq;
+  return new Promise((ok, fail) => {
+    // A wedged worker mustn't hold up this file's saves forever: give up, and start a fresh worker next time.
+    const timer = window.setTimeout(() => stopWorker("it took too long", false), 180_000);
+    calls.set(id, { fn, args, ok, fail, timer });
+    pdfWorker!.postMessage({ id, fn, args });
+  }) as ReturnType<Heavy[K]>;
+}
+
 /** Human wording for pdf.js / pdf-lib failures. */
 export function pdfError(e: unknown) {
   const s = String((e as Error)?.name ?? "") + " " + String((e as Error)?.message ?? e);
   if (/Password/i.test(s)) return "this PDF is password-protected";
   if (/Encrypted/i.test(s)) return "this PDF is locked against editing, so its highlights stay in the app only";
-  if (/Invalid ?PDF|Invalid PDF structure/i.test(s)) return "this file isn't a readable PDF";
+  if (/Invalid ?PDF|Invalid PDF structure|Failed to parse/i.test(s)) return "this file isn't a readable PDF";
   return s.trim();
 }
 
@@ -194,7 +240,11 @@ async function indexFile(f: FileRow) {
       );
     }
     await importHighlights(f.id, bytes, async (p) => items[p - 1] ?? []);
-    const thumb = f.thumb ?? (await renderThumb(doc));
+    // A note made in the app says so in its keywords, so it's still a note after a reinstall or on another computer.
+    const info = (await doc.getMetadata().catch(() => null))?.info as { Keywords?: unknown } | undefined;
+    const paper = String(info?.Keywords ?? "").match(/\bwaterlily-paper:(blank|lined|grid|dotted)\b/)?.[1];
+    if (paper && !f.paper) await run(`UPDATE files SET paper=$2 WHERE id=$1`, [f.id, paper]);
+    const thumb = f.thumb ?? (await renderThumb(doc, !!paper));
     await run(`UPDATE files SET pages=$2, thumb=$3, hash=$4, indexed_mtime=$5 WHERE id=$1`, [
       f.id, doc.numPages, thumb, await sha256(bytes), f.mtime,
     ]);
@@ -208,11 +258,15 @@ async function indexImage(f: FileRow) {
   const bytes = await readBytes(f.rel);
   let thumb = f.thumb;
   if (!thumb) {
-    const bmp = await createImageBitmap(new Blob([bytes as BlobPart]), { resizeWidth: 360, resizeQuality: "medium" });
+    const blob = new Blob([bytes as BlobPart]);
+    const small = { resizeWidth: 360, resizeQuality: "medium" as const };
+    // Phone photos are often stored sideways with a note saying which way is up (EXIF): honour it.
+    const bmp = await createImageBitmap(blob, { ...small, imageOrientation: "from-image" }).catch(() => createImageBitmap(blob, small));
+    // Sized here too: not every engine honours resizeWidth, and a full-size photo would bloat the database.
     const canvas = document.createElement("canvas");
-    canvas.width = bmp.width;
-    canvas.height = bmp.height;
-    canvas.getContext("2d")!.drawImage(bmp, 0, 0);
+    canvas.width = Math.min(360, bmp.width);
+    canvas.height = Math.max(1, Math.round((bmp.height * canvas.width) / bmp.width));
+    canvas.getContext("2d")!.drawImage(bmp, 0, 0, canvas.width, canvas.height);
     bmp.close();
     thumb = canvas.toDataURL("image/jpeg", 0.8);
   }
@@ -238,7 +292,7 @@ async function renderThumb(doc: pdfjs.PDFDocumentProxy, withAnnotations = false)
 async function importHighlights(fileId: number, bytes: Uint8Array, textOf: (page: number) => Promise<Items>) {
   let found;
   try {
-    found = await readHighlights(bytes);
+    found = await offThread("readHighlights", bytes);
   } catch {
     return 0; // encrypted or unparseable: nothing we can import
   }
@@ -246,7 +300,7 @@ async function importHighlights(fileId: number, bytes: Uint8Array, textOf: (page
   const have = await q<{ id: string; source_key: string | null }>(`SELECT id, source_key FROM highlights WHERE file_id=$1`, [fileId]);
   const ids = new Set(have.map((h) => h.id));
   const keys = new Set(have.map((h) => h.source_key));
-  const fresh = found.filter((h) => (h.ours ? !ids.has(h.key.slice(NM_PREFIX.length)) : !keys.has(h.key)));
+  const fresh = found.filter((h) => !keys.has(h.key) && !(h.ours && ids.has(h.key.slice(NM_PREFIX.length))));
   if (!fresh.length) return 0;
   const cols = await colors();
   const nearest = (hex: string) => {
@@ -255,19 +309,26 @@ async function importHighlights(fileId: number, bytes: Uint8Array, textOf: (page
     return cols.reduce((a, c) => (d(c.hex) < d(a.hex) ? c : a)).id;
   };
   for (const h of fresh) {
-    await run(
+    const text = h.kind === "text" ? h.text ?? "" : h.ink ? "" : textInRects(await textOf(h.page), h.rects);
+    const insert = (id: string, sourceKey: string | null) => run(
       `INSERT OR IGNORE INTO highlights(id, file_id, page, rects, color_id, text, note, created_at, source_key, ink, width, kind, hex, size)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
-      [h.ours ? h.key.slice(NM_PREFIX.length) : crypto.randomUUID(), fileId, h.page, JSON.stringify(h.rects),
-        nearest(h.hex), h.kind === "text" ? h.text ?? "" : h.ink ? "" : textInRects(await textOf(h.page), h.rects), h.note, Date.now(), h.ours ? null : h.key,
+      [id, fileId, h.page, JSON.stringify(h.rects), nearest(h.hex), text, h.note, Date.now(), sourceKey,
         h.ink ? JSON.stringify(h.ink) : null, h.width ?? null, h.kind ?? null, h.kind ? h.hex : null, h.size ?? null],
     );
+    // Ours keep their id. But a copy of a PDF carries the same ids as the original, which already has them:
+    // the copy's get fresh ids, and remember the one they came with so they're only imported once.
+    if (!h.ours || !(await insert(h.key.slice(NM_PREFIX.length), null)).rowsAffected) await insert(crypto.randomUUID(), h.key);
   }
   return fresh.length;
 }
 
 /** Import highlights other apps added to this file, opening pdf.js only if there's text to fetch. */
 export async function importNew(fileId: number, bytes: Uint8Array) {
+  // Unchanged since we last wrote or read it, so nothing new can be in it. (Importing anyway would also
+  // bring back a stroke she erased a moment ago that the next save is about to take out of the file.)
+  const [f] = await q<{ hash: string | null }>(`SELECT hash FROM files WHERE id=$1`, [fileId]);
+  if (f?.hash && f.hash === (await sha256(bytes))) return 0;
   let doc: pdfjs.PDFDocumentProxy | null = null;
   try {
     return await importHighlights(fileId, bytes, async (p) => {
@@ -282,7 +343,7 @@ export async function importNew(fileId: number, bytes: Uint8Array) {
 // ---------- writing highlights back into the PDF ----------
 
 const saveTimers = new Map<number, number>();
-const inflight = new Map<number, Promise<void>>();
+const inflight = new Map<number, Promise<unknown>>();
 const warned = new Set<number>();
 
 /** Call after any change to a file's highlights. Writes into the PDF shortly after. */
@@ -292,19 +353,22 @@ export async function markDirty(fileId: number) {
   saveTimers.set(fileId, window.setTimeout(() => void queueSave(fileId), 1500));
 }
 
-/** Saves for one file run one after another, never overlapping. */
+/** Writes to one file (saves, adding a page) run one after another, never overlapping. */
+function enqueue<T>(fileId: number, job: () => Promise<T>): Promise<T> {
+  const next = (inflight.get(fileId) ?? Promise.resolve()).catch(() => {}).then(job);
+  inflight.set(fileId, next);
+  void next.catch(() => {}).finally(() => { if (inflight.get(fileId) === next) inflight.delete(fileId); });
+  return next;
+}
 function queueSave(fileId: number) {
   saveTimers.delete(fileId);
-  const next = (inflight.get(fileId) ?? Promise.resolve()).then(() => saveNow(fileId));
-  inflight.set(fileId, next);
-  void next.finally(() => { if (inflight.get(fileId) === next) inflight.delete(fileId); });
-  return next;
+  return enqueue(fileId, () => saveNow(fileId));
 }
 
 /** Write every pending change now and wait for writes already running (before moves, on close). */
 export async function flushSaves() {
   for (const [id, t] of saveTimers) { clearTimeout(t); void queueSave(id); }
-  await Promise.all([...inflight.values()]);
+  await Promise.allSettled([...inflight.values()]);
 }
 
 async function pageCount(bytes: Uint8Array) {
@@ -324,32 +388,37 @@ async function saveNow(fileId: number) {
     if (await importNew(fileId, bytes)) changed();
     const cols = new Map((await colors()).map((c) => [c.id, c.hex]));
     const hs = (await q<HighlightRow>(`SELECT * FROM highlights WHERE file_id=$1`, [fileId])).map(parseHl);
-    const out = await writeHighlights(
+    const out = await offThread(
+      "writeHighlights",
       bytes,
       hs.map((h) => ({ id: h.id, page: h.page, rects: h.rects, hex: h.hex ?? cols.get(h.color_id) ?? "#ffe680", note: h.note, ink: h.ink, width: h.width, kind: h.kind, text: h.text, size: h.size })),
     );
     // Never replace her file with something that doesn't open the same way.
     const [before, after] = await Promise.all([pageCount(bytes), pageCount(out)]);
     if (before !== after) throw new Error(`the rewritten file had ${after} pages instead of ${before}`);
+    const hash = await sha256(out);
     const mtime = await invoke<number>("write_pdf", out, {
       headers: { path: encodeURIComponent(abs(f.rel)), backup: String(f.id) },
     });
-    // Notes show their handwriting on the Library cover, so redraw it.
-    if (f.paper) {
-      const nd = await openPdf(out);
-      try { await run(`UPDATE files SET thumb=$2 WHERE id=$1`, [fileId, await renderThumb(nd, true)]); } finally { void nd.loadingTask.destroy(); }
-    }
-    // Our own write shouldn't trigger a re-index. Only clear the changes this write included:
+    // Recorded straight away, so the watcher doesn't take our own write for an outside change and re-index
+    // (which would bring back strokes erased meanwhile). Only clear the changes this write included:
     // an edit made while it ran bumped the counter and still gets its own save.
     await run(`UPDATE files SET mtime=$2, indexed_mtime=$2, size=$3, hash=$4, dirty=max(dirty-$5, 0) WHERE id=$1`, [
-      fileId, mtime, out.length, await sha256(out), f.dirty,
+      fileId, mtime, out.length, hash, f.dirty,
     ]);
     warned.delete(fileId);
+    // Notes show their handwriting on the Library cover, so redraw it.
+    if (f.paper) await noteThumb(fileId, out).catch(() => {});
   } catch (e) {
     console.warn("save failed", f.rel, e);
     if (!warned.has(fileId)) toast(`Your highlights are safe in the app, but couldn't be saved into "${displayName(f.rel)}": ${pdfError(e)}`);
     warned.add(fileId);
   }
+}
+
+async function noteThumb(fileId: number, bytes: Uint8Array) {
+  const nd = await openPdf(bytes);
+  try { await run(`UPDATE files SET thumb=$2 WHERE id=$1`, [fileId, await renderThumb(nd, true)]); } finally { void nd.loadingTask.destroy(); }
 }
 
 // ---------- file operations (moves go to disk; the watcher confirms) ----------
@@ -385,25 +454,31 @@ export async function createNote(folderRel: string, name: string, paper: Paper) 
   }
   await sync();
   const [f] = await q<{ id: number }>(`SELECT id FROM files WHERE rel=$1`, [rel]);
-  if (f) await run(`UPDATE files SET paper=$2 WHERE id=$1`, [f.id, paper]);
-  return f?.id ?? null;
+  if (!f) {
+    toast(`"${name}" was made, but it isn't showing up in your notes folder`);
+    return null;
+  }
+  await run(`UPDATE files SET paper=$2 WHERE id=$1`, [f.id, paper]);
+  return f.id;
 }
 
-/** Add a page of the note's paper to the end. Pending ink is written first so nothing is lost. */
-export async function addNotePage(fileId: number) {
-  await flushSaves();
+/** Add a page of the note's paper to the end. Queued with the note's saves, so the two never overlap. */
+export const addNotePage = (fileId: number) => enqueue(fileId, async () => {
   const [f] = await q<FileRow>(`SELECT * FROM files WHERE id=$1`, [fileId]);
-  if (!f?.paper) return false;
+  if (!f?.paper || f.missing) return false;
   try {
-    const out = await addPaperPage(await readBytes(f.rel), f.paper as Paper);
+    const bytes = await readBytes(f.rel);
+    await importNew(fileId, bytes); // anything another app added is taken in first, as saves do
+    const out = await offThread("addPaperPage", bytes, f.paper as Paper);
+    const hash = await sha256(out);
     const mtime = await invoke<number>("write_pdf", out, { headers: { path: encodeURIComponent(abs(f.rel)), backup: String(f.id) } });
-    await run(`UPDATE files SET mtime=$2, indexed_mtime=$2, size=$3, pages=pages+1 WHERE id=$1`, [fileId, mtime, out.length]);
+    await run(`UPDATE files SET mtime=$2, indexed_mtime=$2, size=$3, hash=$4, pages=pages+1 WHERE id=$1`, [fileId, mtime, out.length, hash]);
     return true;
   } catch (e) {
     toast(`Couldn't add a page: ${pdfError(e)}`);
     return false;
   }
-}
+});
 
 export async function makeFolder(parentRel: string, name: string) {
   const rel = parentRel ? `${parentRel}/${name}` : name;

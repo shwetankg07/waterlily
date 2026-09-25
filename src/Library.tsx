@@ -144,7 +144,8 @@ export default function Library({ folder, go }: { folder: string; go: Go }) {
       {editing && <Decorate target={editing} tags={data.tags} fileTags={data.fileTags}
         meta={editing.kind === "folder" ? data.folders.get(editing.rel) : undefined} onClose={() => setEditing(null)} />}
       {newFolder && <NewFolder parent={folder} onClose={() => setNewFolder(false)} />}
-      {newNote && <NewNote folder={folder} go={go} onClose={() => setNewNote(false)} />}
+      {newNote && <NewNote folder={folder} go={go} onClose={() => setNewNote(false)}
+        taken={new Set(data.files.filter((f) => parentOf(f.rel) === folder).map((f) => baseName(f.rel).toLowerCase()))} />}
     </div>
   );
 }
@@ -191,8 +192,16 @@ function Notebook({ rel, meta, onOpen, children }: { rel: string; meta?: FolderR
   );
 }
 
-/** Characters Windows doesn't allow in file and folder names. */
-const BAD_NAME = /[\\/:*?"<>|]/;
+/** Why Windows (or the app) can't take this as a file or folder name; null if it's fine. */
+function nameProblem(name: string) {
+  const n = name.trim();
+  if (!n) return "Give it a name";
+  if (/[\\/:*?"<>|\u0000-\u001f]/.test(n)) return `Names can't contain \\ / : * ? " < > |`;
+  if (/^[.$]/.test(n)) return "Names can't start with . or $"; // such files are hidden, so it would vanish
+  if (n.endsWith(".")) return "Names can't end with a dot";
+  if (/^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\..*)?$/i.test(n)) return "Windows keeps that name for itself, try another";
+  return null;
+}
 
 const hash = (s: string) => [...s].reduce((h, c) => (h * 31 + c.charCodeAt(0)) >>> 0, 7);
 
@@ -212,7 +221,8 @@ function Decorate({ target, meta, tags, fileTags, onClose }: {
   const [newTag, setNewTag] = useState("");
 
   const shownName = isFolder ? baseName(rel) : displayName(rel);
-  const nameOk = !!name.trim() && !BAD_NAME.test(name);
+  const problem = name.trim() === shownName ? null : nameProblem(name);
+  const nameOk = !problem;
   async function save() {
     if (!nameOk) return;
     let at = rel;
@@ -252,7 +262,7 @@ function Decorate({ target, meta, tags, fileTags, onClose }: {
       <h2 className="hand">Decorate {isFolder ? "notebook" : "page"}</h2>
       <label className="dlg-sec" htmlFor="dname">Name</label>
       <input id="dname" className="field" value={name} onChange={(e) => setName(e.target.value)} maxLength={120} />
-      {!nameOk && <p className="muted">{name.trim() ? `Names can't contain \\ / : * ? " < > |` : "Give it a name"}</p>}
+      {problem && <p className="muted">{problem}</p>}
 
       <div className="dlg-sec">Color</div>
       <div className="row">
@@ -308,11 +318,16 @@ function Decorate({ target, meta, tags, fileTags, onClose }: {
 const PAPERS: [Paper, string][] = [["lined", "Lined"], ["grid", "Grid"], ["dotted", "Dotted"], ["blank", "Blank"]];
 
 /** A fresh note: a PDF on the paper she picks, opened with the pen ready. */
-function NewNote({ folder, go, onClose }: { folder: string; go: Go; onClose: () => void }) {
+function NewNote({ folder, taken, go, onClose }: { folder: string; taken: Set<string>; go: Go; onClose: () => void }) {
   const [name, setName] = useState("");
   const [paper, setPaper] = useState<Paper>("lined");
-  const title = name.trim() || `Note ${new Date().toLocaleDateString(undefined, { day: "numeric", month: "short" })}`;
-  const ok = !BAD_NAME.test(title);
+  // "Note 25 Sep", or "Note 25 Sep (2)" if that's taken. Some locales end dates with a dot, which Windows won't allow.
+  const day = new Date().toLocaleDateString(undefined, { day: "numeric", month: "short" }).replace(/[\\/:*?"<>|]/g, "-").replace(/[.\s]+$/, "");
+  let auto = `Note ${day}`;
+  for (let i = 2; taken.has(`${auto}.pdf`.toLowerCase()); i++) auto = `Note ${day} (${i})`;
+  const title = name.trim().replace(/\.pdf$/i, "").trim() || auto;
+  const problem = nameProblem(title);
+  const ok = !problem;
   const create = async () => {
     if (!ok) return;
     const id = await createNote(folder, title, paper);
@@ -328,7 +343,7 @@ function NewNote({ folder, go, onClose }: { folder: string; go: Go; onClose: () 
       <label className="dlg-sec" htmlFor="nname">Name</label>
       <input id="nname" className="field" autoFocus placeholder={title} value={name} maxLength={120}
         onChange={(e) => setName(e.target.value)} onKeyDown={(e) => e.key === "Enter" && create()} />
-      {!ok && <p className="muted">Names can't contain \ / : * ? " &lt; &gt; |</p>}
+      {problem && <p className="muted">{problem}</p>}
       <div className="dlg-sec">Paper</div>
       <div className="papers">
         {PAPERS.map(([id, label]) => (
@@ -345,14 +360,15 @@ function NewNote({ folder, go, onClose }: { folder: string; go: Go; onClose: () 
 
 function NewFolder({ parent, onClose }: { parent: string; onClose: () => void }) {
   const [name, setName] = useState("");
-  const ok = !!name.trim() && !BAD_NAME.test(name);
+  const problem = nameProblem(name);
+  const ok = !problem;
   const create = async () => { if (ok && (await makeFolder(parent, name.trim()))) { sound.pop(); onClose(); } };
   return (
     <Dialog onClose={onClose}>
       <h2 className="hand">New notebook</h2>
       <input className="field" autoFocus placeholder="e.g. Organic Chemistry" value={name} maxLength={120}
         onChange={(e) => setName(e.target.value)} onKeyDown={(e) => e.key === "Enter" && create()} aria-label="Folder name" />
-      {name && !ok && <p className="muted">Folder names can't contain \ / : * ? " &lt; &gt; |</p>}
+      {name && problem && <p className="muted">{problem}</p>}
       <div className="row" style={{ justifyContent: "flex-end", marginTop: "1rem" }}>
         <button className="btn ghost" onClick={onClose}>Cancel</button>
         <button className="btn primary" disabled={!ok} onClick={create}>Create folder</button>
@@ -384,7 +400,7 @@ function SearchResults({ query, go }: { query: string; go: Go }) {
       ).catch(() => []),
       q<{ file_id: number; page: number; text: string; note: string; rel: string }>(
         `SELECT h.file_id, h.page, h.text, h.note, f.rel FROM highlights h JOIN files f ON f.id = h.file_id
-         WHERE h.text LIKE $1 OR h.note LIKE $1 LIMIT 30`, [like]),
+         WHERE (h.text LIKE $1 OR h.note LIKE $1) AND f.missing=0 LIMIT 30`, [like]),
     ]);
     return { names, pages, hls };
   }, [query]);

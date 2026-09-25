@@ -91,6 +91,8 @@ function drawPaper(doc: PDFDocument, style: Paper) {
 /** A brand-new one-page note on the chosen paper. */
 export async function paperPdf(style: Paper): Promise<Uint8Array> {
   const doc = await PDFDocument.create();
+  // Marks it as a note (and its paper) inside the file itself, so it's still one after a reinstall.
+  doc.setKeywords([`waterlily-paper:${style}`]);
   drawPaper(doc, style);
   return doc.save();
 }
@@ -148,6 +150,34 @@ export function mergeLineRects(rects: Rect[]): Rect[] {
 }
 
 const fmt = (n: number) => (Math.round(n * 1000) / 1000).toString();
+const fmt2 = (n: number) => (Math.round(n * 100) / 100).toString();
+
+/** Bounds of many points without spreading huge arrays into Math.min (which overflows the stack). */
+function bounds(xs: number[], ys: number[]) {
+  let x1 = Infinity, y1 = Infinity, x2 = -Infinity, y2 = -Infinity;
+  for (const x of xs) { if (x < x1) x1 = x; if (x > x2) x2 = x; }
+  for (const y of ys) { if (y < y1) y1 = y; if (y > y2) y2 = y; }
+  return Number.isFinite(x1 + y1 + x2 + y2) ? [x1, y1, x2, y2] : null;
+}
+
+/**
+ * Drawn shapes of strokes, computed once and kept compressed. A stroke never changes after it's
+ * drawn (only its color or note can), so every later save reuses its drawing instead of redoing
+ * the pen outline and compressing it again.
+ */
+const drawings = new Map<string, { bytes: Uint8Array; bbox: number[] }>();
+function cachedDrawing(key: string, make: () => { content: string; bbox: number[] } | null, doc: PDFDocument) {
+  let d = drawings.get(key);
+  if (!d) {
+    const made = make();
+    if (!made) return null;
+    const raw = doc.context.flateStream(made.content);
+    d = { bytes: raw.contents, bbox: made.bbox };
+    if (drawings.size > 20000) drawings.clear();
+    drawings.set(key, d);
+  }
+  return d;
+}
 
 /**
  * Replace every /Highlight annotation, and our own /Ink marker strokes, with the given ones.
@@ -194,12 +224,15 @@ export async function writeHighlights(bytes: Uint8Array, hs: WritableHighlight[]
     if (h.kind === "text") {
       // A typed box: /FreeText with the words in /Contents. The drawn text uses Helvetica, which covers
       // Latin text; for anything else (Hindi, emoji) other viewers draw it themselves from /Contents.
-      const [x1, y1, x2, y2] = h.rects[0];
+      const [x1, , x2, y2] = h.rects[0];
+      let y1 = h.rects[0][1];
       const sz = h.size ?? 14;
       helv ??= await doc.embedFont(StandardFonts.Helvetica);
       let ap: PDFRef | null = null;
       try {
         const lines = wrap(h.text ?? "", helv, sz, x2 - x1 - 4);
+        // Helvetica can wrap into more lines than the app's font did; grow the box so none get clipped.
+        y1 = Math.min(y1, y2 - sz * (1.1 + (lines.length - 1) * 1.35) - sz * 0.5);
         const body = lines.map((l, i) => `1 0 0 1 2 ${fmt(y2 - y1 - sz * (1.1 + i * 1.35))} Tm ${helv!.encodeText(l).toString()} Tj`).join(" ");
         ap = ctx.register(ctx.stream(`BT /F1 ${fmt(sz)} Tf ${fmt(r)} ${fmt(g)} ${fmt(b)} rg ${body} ET`, {
           Type: "XObject", Subtype: "Form", BBox: [0, 0, x2 - x1, y2 - y1], Matrix: [1, 0, 0, 1, x1, y1], Resources: { Font: { F1: helv.ref } },
@@ -216,34 +249,48 @@ export async function writeHighlights(bytes: Uint8Array, hs: WritableHighlight[]
       // Handwriting: the drawn shape is the pressure-varying outline, filled with solid ink. InkList keeps a
       // plain centerline for viewers that redraw ink themselves; /WLPoints keeps the exact pen data for us.
       const w = h.width ?? 2.5;
-      const outlines = h.ink.map((st) => penOutline(st, w)).filter((o) => o.length > 2);
-      const all = outlines.flat();
-      const x1 = Math.min(...all.map((p) => p[0])) - 1, y1 = Math.min(...all.map((p) => p[1])) - 1;
-      const x2 = Math.max(...all.map((p) => p[0])) + 1, y2 = Math.max(...all.map((p) => p[1])) + 1;
-      const path = outlines.map((o) => o.map((p, i) => `${fmt(p[0] - x1)} ${fmt(p[1] - y1)} ${i ? "l" : "m"}`).join(" ") + " h").join(" ");
-      const ap = ctx.register(ctx.stream(`${fmt(r)} ${fmt(g)} ${fmt(b)} rg ${path} f`, {
-        Type: "XObject", Subtype: "Form", BBox: [0, 0, x2 - x1, y2 - y1], Matrix: [1, 0, 0, 1, x1, y1],
+      const ink = h.ink;
+      const drawing = cachedDrawing(`pen|${h.id}|${h.hex}|${w}`, () => {
+        const outlines = ink.map((st) => penOutline(st, w)).filter((o) => o.length > 2);
+        const bb = bounds(outlines.flatMap((o) => o.map((p) => p[0])), outlines.flatMap((o) => o.map((p) => p[1])));
+        if (!bb) return null;
+        const [ox, oy] = [bb[0] - 1, bb[1] - 1];
+        const path = outlines.map((o) => o.map((p, i) => `${fmt2(p[0] - ox)} ${fmt2(p[1] - oy)} ${i ? "l" : "m"}`).join(" ") + " h").join(" ");
+        return { content: `${fmt(r)} ${fmt(g)} ${fmt(b)} rg ${path} f`, bbox: [ox, oy, bb[2] + 1, bb[3] + 1] };
+      }, doc);
+      if (!drawing) continue; // nothing drawable (shouldn't happen); the stroke stays safe in the app
+      const [x1, y1, x2, y2] = drawing.bbox;
+      const ap = ctx.register(ctx.stream(drawing.bytes, {
+        Type: "XObject", Subtype: "Form", BBox: [0, 0, x2 - x1, y2 - y1], Matrix: [1, 0, 0, 1, x1, y1], Filter: "FlateDecode",
       }));
       annot = ctx.obj({
         Type: "Annot", Subtype: "Ink", P: page.ref, Rect: [x1, y1, x2, y2], BS: { W: w }, C: [r, g, b], F: 4,
-        InkList: h.ink.map((st) => st.filter((_, i) => i % 3 !== 2)), WLPoints: h.ink,
+        // The standard centerline, thinned to every few points: viewers draw the stroke from /AP anyway.
+        InkList: h.ink.map((st) => { const xy: number[] = []; for (let i = 0; i + 1 < st.length; i += 9) xy.push(+fmt2(st[i]), +fmt2(st[i + 1])); const n = st.length - 3; if (n > 0 && n % 9) xy.push(+fmt2(st[n]), +fmt2(st[n + 1])); return xy; }),
+        // Exact pen data (x, y, pressure) as one compact string per stroke; far cheaper than thousands of PDF numbers.
+        WLPen: PDFString.of(h.ink.map((st) => st.map(fmt2).join(",")).join(";")),
         NM: PDFString.of(NM_PREFIX + h.id), T: PDFString.of(AUTHOR), M: PDFString.fromDate(now), AP: { N: ap },
       });
     } else if (h.ink?.length) {
       // Freehand marker: an /Ink annotation with a round-capped translucent stroke.
       const w = h.width ?? 12;
-      const xs = h.ink.flatMap((st) => st.filter((_, i) => i % 2 === 0));
-      const ys = h.ink.flatMap((st) => st.filter((_, i) => i % 2 === 1));
-      const x1 = Math.min(...xs) - w / 2, y1 = Math.min(...ys) - w / 2;
-      const x2 = Math.max(...xs) + w / 2, y2 = Math.max(...ys) + w / 2;
-      const path = h.ink.map((st) => {
-        let d = `${fmt(st[0] - x1)} ${fmt(st[1] - y1)} m`;
-        for (let i = 2; i + 1 < st.length; i += 2) d += ` ${fmt(st[i] - x1)} ${fmt(st[i + 1] - y1)} l`;
-        if (st.length === 2) d += ` ${fmt(st[0] - x1 + 0.01)} ${fmt(st[1] - y1)} l`; // a dot
-        return d;
-      }).join(" ");
-      const ap = ctx.register(ctx.stream(`/GS0 gs ${fmt(r)} ${fmt(g)} ${fmt(b)} RG ${fmt(w)} w 1 J 1 j ${path} S`, {
-        Type: "XObject", Subtype: "Form", BBox: [0, 0, x2 - x1, y2 - y1], Matrix: [1, 0, 0, 1, x1, y1], Resources: gs,
+      const ink = h.ink;
+      const drawing = cachedDrawing(`marker|${h.id}|${h.hex}|${w}`, () => {
+        const bb = bounds(ink.flatMap((st) => st.filter((_, i) => i % 2 === 0)), ink.flatMap((st) => st.filter((_, i) => i % 2 === 1)));
+        if (!bb) return null;
+        const [ox, oy] = [bb[0] - w / 2, bb[1] - w / 2];
+        const path = ink.map((st) => {
+          let d = `${fmt2(st[0] - ox)} ${fmt2(st[1] - oy)} m`;
+          for (let i = 2; i + 1 < st.length; i += 2) d += ` ${fmt2(st[i] - ox)} ${fmt2(st[i + 1] - oy)} l`;
+          if (st.length === 2) d += ` ${fmt2(st[0] - ox + 0.01)} ${fmt2(st[1] - oy)} l`; // a dot
+          return d;
+        }).join(" ");
+        return { content: `/GS0 gs ${fmt(r)} ${fmt(g)} ${fmt(b)} RG ${fmt(w)} w 1 J 1 j ${path} S`, bbox: [ox, oy, bb[2] + w / 2, bb[3] + w / 2] };
+      }, doc);
+      if (!drawing) continue;
+      const [x1, y1, x2, y2] = drawing.bbox;
+      const ap = ctx.register(ctx.stream(drawing.bytes, {
+        Type: "XObject", Subtype: "Form", BBox: [0, 0, x2 - x1, y2 - y1], Matrix: [1, 0, 0, 1, x1, y1], Resources: gs, Filter: "FlateDecode",
       }));
       annot = ctx.obj({
         Type: "Annot", Subtype: "Ink", P: page.ref, Rect: [x1, y1, x2, y2], InkList: h.ink, BS: { W: w },
@@ -312,9 +359,13 @@ export async function readHighlights(bytes: Uint8Array): Promise<ReadHighlight[]
         : "#ffeb3b";
       // Our own marker strokes come back too (e.g. after a reinstall); other apps' ink stays theirs.
       if (sub === PDFName.of("Ink") && nm.startsWith(NM_PREFIX)) {
-        const pen = d.lookupMaybe(PDFName.of("WLPoints"), PDFArray);
-        const ink = (pen ?? d.lookupMaybe(PDFName.of("InkList"), PDFArray))?.asArray()
-          .map((st) => (ctx.lookup(st) as PDFArray).asArray().map(num)) ?? [];
+        const penStr = text(d.lookup(PDFName.of("WLPen")));
+        const penArr = d.lookupMaybe(PDFName.of("WLPoints"), PDFArray); // written by the first notes build
+        const pen = penStr || penArr;
+        const ink = penStr
+          ? penStr.split(";").map((st) => st.split(",").map(Number))
+          : ((penArr ?? d.lookupMaybe(PDFName.of("InkList"), PDFArray))?.asArray()
+            .map((st) => (ctx.lookup(st) as PDFArray).asArray().map(num)) ?? []);
         const rect = d.lookupMaybe(PDFName.of("Rect"), PDFArray)?.asArray().map(num) as Rect | undefined;
         const w = (d.lookupMaybe(PDFName.of("BS"), PDFDict)?.lookup(PDFName.of("W")) as { asNumber?: () => number } | undefined)?.asNumber?.() ?? 12;
         if (ink.length && rect) out.push({ key: nm, ours: true, page: i + 1, rects: [rect], hex, note: text(d.lookup(PDFName.of("Contents"))), ink, width: w, ...(pen ? { kind: "pen" as const } : {}) });

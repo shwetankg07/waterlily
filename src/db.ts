@@ -57,7 +57,8 @@ export async function openDb() {
   for (const s of SCHEMA) await db.execute(s);
   const [{ user_version: version }] = await q<{ user_version: number }>(`PRAGMA user_version`);
   for (let i = version; i < MIGRATIONS.length; i++) {
-    await run(MIGRATIONS[i]);
+    // A crash between the change and the version bump leaves the column already there: that's fine.
+    await run(MIGRATIONS[i]).catch((e) => { if (!/duplicate column/i.test(String(e))) throw e; });
     await run(`PRAGMA user_version = ${i + 1}`);
   }
   const [{ n }] = await q<{ n: number }>(`SELECT count(*) n FROM colors`);

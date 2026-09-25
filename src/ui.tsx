@@ -26,6 +26,29 @@ export function useData<T>(load: () => Promise<T>, deps: unknown[]): T | undefin
   return d;
 }
 
+/**
+ * Two-finger pinch on a touchscreen zooms by calling zoom(k). The browser's own pinch is off
+ * (touch-action on .pages), so the whole app never zooms. `ignore` skips it, e.g. while a stylus is writing.
+ */
+export function usePinch(ref: React.RefObject<HTMLElement | null>, zoom: React.RefObject<(k: number) => void>, ignore: () => boolean, deps: unknown[]) {
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    let base = 0;
+    const on = (e: TouchEvent) => {
+      if (e.touches.length !== 2 || ignore()) { base = 0; return; }
+      const [a, b] = [e.touches[0], e.touches[1]];
+      const d = Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
+      if (!base) base = d;
+      else if (d / base > 1.12 || d / base < 1 / 1.12) { zoom.current(d / base); base = d; }
+    };
+    const kinds = ["touchstart", "touchmove", "touchend", "touchcancel"] as const;
+    for (const k of kinds) el.addEventListener(k, on, { passive: true });
+    return () => { for (const k of kinds) el.removeEventListener(k, on); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, deps);
+}
+
 /** Native <dialog>, opened while mounted. Closes on Esc, or a click that starts and ends on the backdrop. */
 export function Dialog({ children, onClose }: { children: ReactNode; onClose: () => void }) {
   const ref = useRef<HTMLDialogElement>(null);
