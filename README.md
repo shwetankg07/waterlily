@@ -1,11 +1,13 @@
 # Waterlily ✿
 
-A cozy, fully offline home for your PDF notes. Highlight in colors that mean something, keep notes on your highlights, and organize your folders like a stationery desk.
+A cozy, fully offline home for your PDF notes. Highlight in colors that mean something, write and type your own notes, and organize your folders like a stationery desk.
 
 ## What it does
 
-- **Highlight PDFs** in named colors (definition, important, formula…), with a note on any highlight. Keys `1`–`9` pick a color after selecting text.
-- **Highlights live in the PDF.** They're saved as standard PDF annotations, so they show up in Edge, Adobe, Okular or on your phone. Highlights made in those apps are imported too.
+- **Highlight PDFs** in named colors (definition, important, formula…), with a note on any highlight. Select text and pick a color (keys `1`–`9` work too), swipe over it with the highlighter, or draw freely with the marker.
+- **Write by hand.** Make a new note on lined, grid, dotted or blank paper and write with a pressure-sensitive pen, or tap anywhere and type. There's an eraser (the stylus's eraser end works too), undo/redo, and palm rejection, so a resting hand doesn't draw or scroll.
+- **Photos of notes** (PNG, JPG, WEBP, GIF, BMP): drag a box over any part to highlight it and add a note.
+- **Everything lives in the PDF.** Highlights, handwriting and typed text are saved as standard PDF annotations, so they show up in Edge, Adobe, Okular or on your phone. Highlights made in those apps are imported too.
 - **Your folders, decorated.** The app mirrors your notes folder: subfolders become notebooks you can color, cover with a picture, stick emoji on and give an exam countdown. Moving things in the app moves them on disk.
 - **Study modes:** *Quiz me* hides your highlights until you tap them; *Only highlights* shows just the highlighted parts of a PDF.
 - **Search** across the text of every PDF, your highlights and your notes.
@@ -36,7 +38,7 @@ The installer isn't code-signed, so the first run shows "Windows protected your 
 
 ## Known limits
 
-- Typed/digital PDFs only; scanned pages have no text to select.
+- Scanned pages have no text to select; the marker works on them instead.
 - Password-protected PDFs can't be opened. PDFs locked against editing open fine, but their highlights stay in the app instead of being written into the file.
 - Links inside PDFs aren't clickable yet.
 - Renaming a folder outside the app loses its decorations.

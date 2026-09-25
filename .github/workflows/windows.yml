@@ -12,11 +12,18 @@ jobs:
   build:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: npm
+      # A tag must match the app version, or the release would carry an installer with the old number.
+      - if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        run: |
+          v=$(node -p "require('./src-tauri/tauri.conf.json').version")
+          c=$(sed -n 's/^version = "\(.*\)"/\1/p' src-tauri/Cargo.toml | head -1)
+          [ "$GITHUB_REF_NAME" = "v$v" ] && [ "$c" = "$v" ] || { echo "::error::Tag $GITHUB_REF_NAME, tauri.conf.json $v and Cargo.toml $c must match"; exit 1; }
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
@@ -25,11 +32,13 @@ jobs:
       - run: npm run check
       - run: cargo test --manifest-path src-tauri/Cargo.toml
       - run: npx tauri build
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: setup-exe
           path: src-tauri/target/release/bundle/nsis/*-setup.exe
       - if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
+          name: Waterlily ${{ github.ref_name }}
           files: src-tauri/target/release/bundle/nsis/*-setup.exe
+          fail_on_unmatched_files: true
