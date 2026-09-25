@@ -224,18 +224,29 @@ export async function writeHighlights(bytes: Uint8Array, hs: WritableHighlight[]
     if (h.kind === "text") {
       // A typed box: /FreeText with the words in /Contents. The drawn text uses Helvetica, which covers
       // Latin text; for anything else (Hindi, emoji) other viewers draw it themselves from /Contents.
-      const [x1, , x2, y2] = h.rects[0];
-      let y1 = h.rects[0][1];
+      let [x1, y1, x2, y2] = h.rects[0];
+      // On a rotated page the text is drawn turned back by the page's rotation, so it reads upright on screen.
+      const angle = page.getRotation().angle;
+      const rot = angle % 90 ? 0 : ((angle % 360) + 360) % 360;
+      const across = rot % 180 ? y2 - y1 : x2 - x1; // the box as she sees it: its width along the lines...
+      let down = rot % 180 ? x2 - x1 : y2 - y1; // ...and its height down them
       const sz = h.size ?? 14;
       helv ??= await doc.embedFont(StandardFonts.Helvetica);
       let ap: PDFRef | null = null;
       try {
-        const lines = wrap(h.text ?? "", helv, sz, x2 - x1 - 4);
-        // Helvetica can wrap into more lines than the app's font did; grow the box so none get clipped.
-        y1 = Math.min(y1, y2 - sz * (1.1 + (lines.length - 1) * 1.35) - sz * 0.5);
-        const body = lines.map((l, i) => `1 0 0 1 2 ${fmt(y2 - y1 - sz * (1.1 + i * 1.35))} Tm ${helv!.encodeText(l).toString()} Tj`).join(" ");
+        const lines = wrap(h.text ?? "", helv, sz, across - 4);
+        // Helvetica can wrap into more lines than the app's font did; grow the box (downwards as she sees it) so none get clipped.
+        const need = sz * (1.1 + (lines.length - 1) * 1.35) + sz * 0.5;
+        if (need > down) {
+          down = need;
+          if (rot === 0) y1 = y2 - down; else if (rot === 90) x2 = x1 + down; else if (rot === 180) y2 = y1 + down; else x1 = x2 - down;
+        }
+        const body = lines.map((l, i) => `1 0 0 1 2 ${fmt(down - sz * (1.1 + i * 1.35))} Tm ${helv!.encodeText(l).toString()} Tj`).join(" ");
+        const [cos, sin] = [[1, 0], [0, 1], [-1, 0], [0, -1]][rot / 90];
         ap = ctx.register(ctx.stream(`BT /F1 ${fmt(sz)} Tf ${fmt(r)} ${fmt(g)} ${fmt(b)} rg ${body} ET`, {
-          Type: "XObject", Subtype: "Form", BBox: [0, 0, x2 - x1, y2 - y1], Matrix: [1, 0, 0, 1, x1, y1], Resources: { Font: { F1: helv.ref } },
+          Type: "XObject", Subtype: "Form", BBox: [0, 0, across, down], Resources: { Font: { F1: helv.ref } },
+          // Turned by the rotation, and placed so the turned box lands exactly on Rect.
+          Matrix: [cos, sin, -sin, cos, rot === 0 || rot === 270 ? x1 : x2, rot === 0 || rot === 90 ? y1 : y2],
         }));
       } catch { /* characters Helvetica can't draw: leave the drawing to the viewer */ }
       annot = ctx.obj({

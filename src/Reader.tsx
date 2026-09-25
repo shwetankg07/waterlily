@@ -733,11 +733,14 @@ function PdfReader({ fileId, page: startPage, go }: { fileId: number; page?: num
     if (downWasPalm.current || getSelection()?.isCollapsed === false || !pages[n - 1]) return;
     setPending(null);
     const box = (e.currentTarget as HTMLElement).getBoundingClientRect();
-    const [x, y] = pages[n - 1].getViewport({ scale }).convertToPdfPoint(e.clientX - box.left, e.clientY - box.top);
+    const vp = pages[n - 1].getViewport({ scale });
+    const [x, y] = vp.convertToPdfPoint(e.clientX - box.left, e.clientY - box.top);
     if (tool === "pen" || tool === "eraser") return;
     if (tool === "text" && mode === "read") {
-      // Start a new box with its top-left where she tapped (kept on the page near an edge).
-      setEditing({ id: null, page: n, rect: clampBox([x, y - textSize * 1.5, x + 240, y], pages[n - 1].view), text: "", size: textSize, hex: ink });
+      // Start a new box with its top-left where she tapped, laid out on screen (so a rotated page works too),
+      // and kept on the page near an edge.
+      const rect = toPdfRect(vp, e.clientX - box.left, e.clientY - box.top, 240 * scale, textSize * 1.5 * scale);
+      setEditing({ id: null, page: n, rect: clampBox(rect, pages[n - 1].view), text: "", size: textSize, hex: ink });
       return;
     }
     // Newest first: it's drawn on top where highlights overlap.
@@ -1070,13 +1073,17 @@ function TextEditor({ ed, vp, scale, view, onDone }: {
   useEffect(() => () => finishRef.current(), []);
   useEffect(() => { const a = area.current!; a.focus(); a.setSelectionRange(a.value.length, a.value.length); }, []);
   useEffect(() => { const a = area.current!; a.style.height = "0"; a.style.height = a.scrollHeight + "px"; }, [text, scale, rect, ed.size]);
-  // Drag helpers: moving shifts the whole box, resizing changes its width (both in PDF points). It stays on the page.
-  const dragWith = (e: React.PointerEvent, apply: (dx: number, dy: number, r: Rect) => Rect) => {
+  // Drag helpers: moving shifts the whole box, resizing changes its width. Worked out on screen (so a rotated
+  // page behaves the same), then kept on the page.
+  type Box = ReturnType<typeof toViewBox>;
+  const dragWith = (e: React.PointerEvent, apply: (dx: number, dy: number, b: Box) => Box) => {
     e.preventDefault();
     e.stopPropagation();
-    const start = { x: e.clientX, y: e.clientY, r: rect, id: e.pointerId };
+    const start = { x: e.clientX, y: e.clientY, b: toViewBox(vp, rect), id: e.pointerId };
     const move = (ev: PointerEvent) => {
-      if (ev.pointerId === start.id) setRect(clampBox(apply((ev.clientX - start.x) / scale, (ev.clientY - start.y) / scale, start.r), view));
+      if (ev.pointerId !== start.id) return;
+      const nb = apply(ev.clientX - start.x, ev.clientY - start.y, start.b);
+      setRect(clampBox(toPdfRect(vp, nb.left, nb.top, nb.width, nb.height), view));
     };
     const up = (ev: PointerEvent) => {
       if (ev.pointerId !== start.id) return;
@@ -1091,11 +1098,11 @@ function TextEditor({ ed, vp, scale, view, onDone }: {
   };
   return (
     <div className="tbox editing" style={{ left: b.left, top: b.top, width: b.width }} onPointerDown={(e) => e.stopPropagation()} onClick={(e) => e.stopPropagation()}>
-      <span className="tb-move" title="Drag to move" aria-label="Move text box" onPointerDown={(e) => dragWith(e, (dx, dy, r) => [r[0] + dx, r[1] - dy, r[2] + dx, r[3] - dy])} />
+      <span className="tb-move" title="Drag to move" aria-label="Move text box" onPointerDown={(e) => dragWith(e, (dx, dy, b) => ({ ...b, left: b.left + dx, top: b.top + dy }))} />
       <textarea ref={area} value={text} rows={1} placeholder="Type here…" aria-label="Text on the page"
         style={{ fontSize: ed.size * scale, color: ed.hex }} onChange={(e) => setText(e.target.value)} onBlur={finish}
         onKeyDown={(e) => { if (e.key === "Escape" || (e.key === "Enter" && (e.ctrlKey || e.metaKey))) { e.preventDefault(); finish(); } }} />
-      <span className="tb-size" title="Drag to resize" aria-label="Resize text box" onPointerDown={(e) => dragWith(e, (dx, _dy, r) => [r[0], r[1], Math.max(r[0] + 40, r[2] + dx), r[3]])} />
+      <span className="tb-size" title="Drag to resize" aria-label="Resize text box" onPointerDown={(e) => dragWith(e, (dx, _dy, b) => ({ ...b, width: Math.max(40 * scale, b.width + dx) }))} />
     </div>
   );
 }

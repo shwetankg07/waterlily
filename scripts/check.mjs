@@ -1,6 +1,6 @@
 // Run: npm run check. Round-trips highlights through a real PDF and viewport geometry.
 import assert from "node:assert/strict";
-import { PDFDocument, PDFName, PDFString } from "pdf-lib";
+import { PDFDocument, PDFName, PDFString, degrees } from "pdf-lib";
 import * as pdfjs from "pdfjs-dist/legacy/build/pdf.mjs";
 import { writeHighlights, readHighlights, toPdfRect, toViewBox, mergeLineRects, NM_PREFIX, paperPdf, addPaperPage } from "../src/pdfcore.ts";
 
@@ -123,6 +123,17 @@ assert.deepEqual(mergeLineRects([[10, 100, 50, 112], [52, 100, 90, 112], [10, 80
   const first = bytes.length;
   for (let i = 0; i < 5; i++) bytes = await writeHighlights(bytes, [box]);
   assert.ok(bytes.length < first * 1.05, `repeated saves don't grow the file (${first} → ${bytes.length})`);
+  // On a page turned 90°, the text is drawn turned back, so other viewers show it upright, and the
+  // turned box lands exactly on the annotation's rect.
+  const turned = await PDFDocument.load(await paperPdf("blank"));
+  turned.getPage(0).setRotation(degrees(90));
+  const tb = await writeHighlights(await turned.save(), [{ ...box, text: "Entropy always increases", rects: [[100, 200, 124, 440]] }]);
+  const tdoc = await PDFDocument.load(tb);
+  const fa = tdoc.getPage(0).node.Annots().asArray().map((r) => tdoc.context.lookup(r)).find((d) => d.get(PDFName.of("Subtype")) === PDFName.of("FreeText"));
+  const form = tdoc.context.lookup(fa.lookup(PDFName.of("AP")).get(PDFName.of("N")));
+  const nums = (k, d) => d.lookup(PDFName.of(k)).asArray().map((n) => n.asNumber());
+  assert.deepEqual(nums("Matrix", form.dict), [0, 1, -1, 0, nums("Rect", fa)[2], nums("Rect", fa)[1]], "text on a turned page is drawn turned back");
+  assert.equal(nums("BBox", form.dict)[2], 240, "its lines run along the box as she sees it");
 }
 
 console.log("✓ all checks passed");
