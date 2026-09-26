@@ -203,9 +203,13 @@ dialog h2 { margin-bottom: .8rem; }
 .progress > i { display: block; height: 100%; background: var(--accent); border-radius: 6px; }
 .dots-btn {
   position: absolute; z-index: 4; top: 6px; right: 6px; border: 0; border-radius: 999px; width: 28px; height: 28px;
-  background: rgb(255 255 255 / .9); color: #4a3340; cursor: pointer; opacity: 0; transition: opacity .15s; font-weight: 900;
+  background: rgb(255 255 255 / .9); color: #4a3340; cursor: pointer; opacity: .75; transition: opacity .15s; font-weight: 900;
+  box-shadow: 0 1px 4px rgb(0 0 0 / .15); font-size: 1.05rem; line-height: 1;
 }
-.nb:hover .dots-btn, .paper:hover .dots-btn, .dots-btn:focus-visible { opacity: 1; }
+/* Always there (a touchscreen has no hover), brighter when the notebook or page under it is hovered.
+   The button sits beside the card in .wrap-rel, not inside it. */
+.wrap-rel:hover .dots-btn, .dots-btn:focus-visible { opacity: 1; }
+.wrap-rel:has(> .nb) .dots-btn { top: 26px; right: 12px; } /* below the notebook's tape */
 .wrap-rel { position: relative; }
 
 .empty { text-align: center; padding: 3rem 1rem; }
