@@ -2,7 +2,7 @@ import { useState, type DragEvent, type ReactNode } from "react";
 import { q, run, type FileRow, type FolderRow, type Tag } from "./db";
 import { preferTool } from "./Reader";
 import type { Paper } from "./pdfcore";
-import { createNote, dirs, parentOf, baseName, displayName, extOf, movePath, makeFolder, indexing, rootName, rootMissing, changed } from "./lib";
+import { createNote, dirs, parentOf, baseName, displayName, cardName, extOf, movePath, makeFolder, indexing, rootName, rootMissing, changed } from "./lib";
 import { useVersion, useData, Dialog, PASTELS, StickerPicker, imageToDataUrl, daysUntil } from "./ui";
 import { sound, toast } from "./fx";
 import type { Go } from "./App";
@@ -121,7 +121,7 @@ export default function Library({ folder, go }: { folder: string; go: Go }) {
                     <div className="sheet" style={{ backgroundImage: pics?.get(f.id) ? `url("${pics.get(f.id)}")` : undefined, ["--fc" as string]: f.color ?? "transparent" }}>
                       <span className="stickers">{f.stickers}</span>
                     </div>
-                    <div className="name">{displayName(f.rel)}</div>
+                    <div className="name">{cardName(f.rel)}</div>
                     {f.pages > 0 && <div className="progress" title={`${Math.min(100, Math.round((f.max_page / f.pages) * 100))}% read`}>
                       <i style={{ width: `${Math.min(100, (f.max_page / f.pages) * 100)}%` }} /></div>}
                     <div className="row" style={{ gap: ".25rem", marginTop: ".3rem" }}>

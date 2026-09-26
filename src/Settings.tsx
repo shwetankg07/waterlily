@@ -40,10 +40,13 @@ export default function Settings() {
   }), [v]);
   const [nick, setNick] = useState<string>();
   const [armed, setArmed] = useState(false);
+  // A copy in state, so a checkbox shows its new value the moment it's clicked (prefs itself isn't state).
+  const [pref, setPrefState] = useState({ ...prefs });
   if (!d) return null;
 
   const setPref = async (k: "sounds" | "motion", on: boolean) => {
     prefs[k] = on;
+    setPrefState({ ...prefs });
     document.documentElement.classList.toggle("calm", !prefs.motion);
     await setSetting(k, on ? "1" : "0");
     changed();
@@ -113,8 +116,8 @@ export default function Settings() {
       </div>
 
       <h2 className="hand" style={{ marginTop: "1.6rem" }}>Feel</h2>
-      <label className="row"><input type="checkbox" checked={prefs.sounds} onChange={(e) => setPref("sounds", e.target.checked)} /> Little sounds</label>
-      <label className="row"><input type="checkbox" checked={prefs.motion} onChange={(e) => setPref("motion", e.target.checked)} /> Animations and sparkles</label>
+      <label className="row"><input type="checkbox" checked={pref.sounds} onChange={(e) => setPref("sounds", e.target.checked)} /> Little sounds</label>
+      <label className="row"><input type="checkbox" checked={pref.motion} onChange={(e) => setPref("motion", e.target.checked)} /> Animations and sparkles</label>
 
       <h2 className="hand" style={{ marginTop: "1.6rem" }}>Notes folder</h2>
       <p className="muted" style={{ overflowWrap: "anywhere" }}>{getRoot()}</p>

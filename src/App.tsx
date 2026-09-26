@@ -101,12 +101,13 @@ export default function App() {
   );
 }
 
-/** Bloom's drifting petals. CSS-only, few of them, and off when animations are turned off. */
+/** Bloom's drifting petals. CSS-only, few of them, and hidden when animations are turned off. */
 const PETALS = Array.from({ length: 14 }, (_, i) => ({
   left: (i * 37) % 100, size: 12 + ((i * 7) % 14), duration: 14 + ((i * 5) % 12), delay: -((i * 13) % 26),
 }));
 function Petals() {
-  if (!prefs.motion || matchMedia("(prefers-reduced-motion: reduce)").matches) return null;
+  // The Animations setting hides them with CSS (.calm), so switching it takes effect straight away.
+  if (matchMedia("(prefers-reduced-motion: reduce)").matches) return null;
   return (
     <div className="petals" aria-hidden>
       {PETALS.map((p, i) => (

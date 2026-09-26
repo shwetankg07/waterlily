@@ -25,6 +25,8 @@ const IMAGE = /\.(png|jpe?g|webp|gif|bmp)$/i;
 export const isImage = (rel: string) => IMAGE.test(rel);
 export const extOf = (rel: string) => rel.match(/\.[^./]+$/)?.[0] ?? "";
 export const displayName = (rel: string) => baseName(rel).replace(/\.(pdf|png|jpe?g|webp|gif|bmp)$/i, "");
+/** A name for cards: may wrap after _ and . too, so "venice_PDF_FolgerShakespeare" breaks between words. */
+export const cardName = (rel: string) => displayName(rel).replace(/([_.])(?=\S)/g, "$1\u200b");
 /** Blob URL for an image note (caller revokes it). */
 export async function imageUrl(rel: string) {
   const type = { ".png": "image/png", ".webp": "image/webp", ".gif": "image/gif", ".bmp": "image/bmp" }[extOf(rel).toLowerCase()] ?? "image/jpeg";
