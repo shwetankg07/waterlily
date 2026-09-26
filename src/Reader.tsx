@@ -2,7 +2,7 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AnnotationMode, TextLayer, type PDFDocumentProxy, type PDFPageProxy, type RenderTask } from "pdfjs-dist/legacy/build/pdf.mjs";
 import { q, run, logActivity, parseHl, colors, type Color, type FileRow, type Highlight, type HighlightRow } from "./db";
 import { readBytes, openPdf, importNew, markDirty, flushSaves, displayName, changed, pdfError, isImage, addNotePage } from "./lib";
-import { toPdfRect, toViewBox, mergeLineRects, AUTHOR, penOptions, type Rect } from "./pdfcore";
+import { toPdfRect, toViewBox, mergeLineRects, AUTHOR, NM_PREFIX, penOptions, type Rect } from "./pdfcore";
 import { getStroke } from "perfect-freehand";
 import { sound, sparkle, toast } from "./fx";
 import { useVersion, useData, usePinch } from "./ui";
@@ -252,8 +252,17 @@ function PdfReader({ fileId, page: startPage, go }: { fileId: number; page?: num
     for (const id of del) pendingDels.current.add(id);
     setHls((all) => (hs.length ? [...all.filter((h) => !gone.has(h.id)), ...hs].sort(byPos) : all.filter((h) => !gone.has(h.id))));
     try {
-      for (const id of del) await run(`DELETE FROM highlights WHERE id=$1`, [id]);
-      for (const r of add) await putRow(r);
+      const now = Date.now();
+      for (const id of del) {
+        // Remembered as gone (by our id and any other app's), so no later import brings it back.
+        await run(`INSERT OR REPLACE INTO gone(file_id, key, at) SELECT $1, source_key, $3 FROM highlights WHERE id=$2 AND source_key IS NOT NULL`, [fileId, id, now]);
+        await run(`INSERT OR REPLACE INTO gone(file_id, key, at) VALUES ($1, $2, $3)`, [fileId, NM_PREFIX + id, now]);
+        await run(`DELETE FROM highlights WHERE id=$1`, [id]);
+      }
+      for (const r of add) {
+        await run(`DELETE FROM gone WHERE file_id=$1 AND key IN ($2, $3)`, [fileId, NM_PREFIX + r.id, r.source_key ?? NM_PREFIX + r.id]);
+        await putRow(r);
+      }
     } finally {
       for (const h of hs) pendingAdds.current.delete(h.id);
       for (const id of del) pendingDels.current.delete(id);

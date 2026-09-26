@@ -23,6 +23,9 @@ const SCHEMA = [
   `CREATE TABLE IF NOT EXISTS activity(
     day TEXT, file_id INT, seconds INT DEFAULT 0, highlights INT DEFAULT 0, focus_min INT DEFAULT 0,
     PRIMARY KEY(day, file_id))`,
+  // What she erased or deleted, per file, until a save has taken it out of the PDF. Imports skip these,
+  // so nothing she removed can come back from the file (a slow save, a cloud-synced folder, a re-index).
+  `CREATE TABLE IF NOT EXISTS gone(file_id INT, key TEXT, at INT, PRIMARY KEY(file_id, key))`,
   `CREATE VIRTUAL TABLE IF NOT EXISTS page_text USING fts5(
     text, file_id UNINDEXED, page UNINDEXED, tokenize='unicode61 remove_diacritics 2')`,
 ];

@@ -188,6 +188,7 @@ async function doSync() {
 
 async function forgetFile(id: number) {
   await run(`DELETE FROM files WHERE id=$1`, [id]);
+  await run(`DELETE FROM gone WHERE file_id=$1`, [id]);
   await run(`DELETE FROM file_tags WHERE file_id=$1`, [id]);
   await run(`DELETE FROM page_text WHERE file_id=$1`, [id]);
 }
@@ -247,9 +248,9 @@ async function indexFile(f: FileRow) {
     const paper = String(info?.Keywords ?? "").match(/\bwaterlily-paper:(blank|lined|grid|dotted)\b/)?.[1];
     if (paper && !f.paper) await run(`UPDATE files SET paper=$2 WHERE id=$1`, [f.id, paper]);
     const thumb = f.thumb ?? (await renderThumb(doc, !!paper));
-    await run(`UPDATE files SET pages=$2, thumb=$3, hash=$4, indexed_mtime=$5 WHERE id=$1`, [
-      f.id, doc.numPages, thumb, await sha256(bytes), f.mtime,
-    ]);
+    await run(`UPDATE files SET pages=$2, thumb=$3 WHERE id=$1`, [f.id, doc.numPages, thumb]);
+    // Only if no save replaced the file meanwhile: that save already recorded the newer hash and time.
+    await run(`UPDATE files SET hash=$2, indexed_mtime=$3 WHERE id=$1 AND mtime=$3`, [f.id, await sha256(bytes), f.mtime]);
   } finally {
     void doc.loadingTask.destroy();
   }
@@ -302,6 +303,7 @@ async function importHighlights(fileId: number, bytes: Uint8Array, textOf: (page
   const have = await q<{ id: string; source_key: string | null }>(`SELECT id, source_key FROM highlights WHERE file_id=$1`, [fileId]);
   const ids = new Set(have.map((h) => h.id));
   const keys = new Set(have.map((h) => h.source_key));
+  for (const g of await q<{ key: string }>(`SELECT key FROM gone WHERE file_id=$1`, [fileId])) keys.add(g.key); // erased or deleted: stays so
   const fresh = found.filter((h) => !keys.has(h.key) && !(h.ours && ids.has(h.key.slice(NM_PREFIX.length))));
   if (!fresh.length) return 0;
   const cols = await colors();
@@ -384,6 +386,7 @@ async function saveNow(fileId: number) {
   // Image files can't carry highlights inside them; theirs live in the app database only.
   if (isImage(f.rel)) return void run(`UPDATE files SET dirty=0 WHERE id=$1`, [fileId]);
   try {
+    const started = Date.now();
     const bytes = await readBytes(f.rel);
     // The write below replaces every highlight in the file, so first take in any that
     // another app added since we last looked; otherwise they'd be lost.
@@ -409,6 +412,9 @@ async function saveNow(fileId: number) {
       fileId, mtime, out.length, hash, f.dirty,
     ]);
     warned.delete(fileId);
+    // What was erased well before this save started is out of the file now; no need to remember it.
+    // (The margin covers an erase still being written to the database when the save read it.)
+    await run(`DELETE FROM gone WHERE file_id=$1 AND at < $2`, [fileId, started - 5000]);
     // Notes show their handwriting on the Library cover, so redraw it.
     if (f.paper) await noteThumb(fileId, out).catch(() => {});
   } catch (e) {
