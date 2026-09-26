@@ -3,7 +3,7 @@ import { q, run, type FileRow, type FolderRow, type Tag } from "./db";
 import { preferTool } from "./Reader";
 import type { Paper } from "./pdfcore";
 import { createNote, dirs, parentOf, baseName, displayName, cardName, extOf, movePath, makeFolder, indexing, rootName, rootMissing, changed } from "./lib";
-import { useVersion, useData, Dialog, PASTELS, StickerPicker, imageToDataUrl, daysUntil } from "./ui";
+import { useVersion, useData, Dialog, PASTELS, StickerPicker, imageToDataUrl, daysUntil, DatePicker } from "./ui";
 import { sound, toast } from "./fx";
 import type { Go } from "./App";
 
@@ -105,7 +105,7 @@ export default function Library({ folder, go }: { folder: string; go: Go }) {
                         {left === 0 ? "exam today!" : `${meta?.exam_label || "exam"} in ${left}d`}
                       </span>
                     )}
-                    <button className="dots-btn" aria-label={`Decorate ${baseName(rel)}`} onClick={() => setEditing({ kind: "folder", rel })}>⋯</button>
+                    <button className="dots-btn" aria-label={`Decorate ${baseName(rel)}`} onClick={() => setEditing({ kind: "folder", rel })}><svg viewBox="0 0 16 4" width="16" height="4" aria-hidden><circle cx="2" cy="2" r="1.6" /><circle cx="8" cy="2" r="1.6" /><circle cx="14" cy="2" r="1.6" /></svg></button>
                   </div>
                 );
               })}
@@ -128,7 +128,7 @@ export default function Library({ folder, go }: { folder: string; go: Go }) {
                       {tagsOf(f.id).map((t) => <span key={t.id} className="chip" style={{ background: t.color }}>#{t.name}</span>)}
                     </div>
                   </button>
-                  <button className="dots-btn" aria-label={`Decorate ${displayName(f.rel)}`} onClick={() => setEditing({ kind: "file", file: f })}>⋯</button>
+                  <button className="dots-btn" aria-label={`Decorate ${displayName(f.rel)}`} onClick={() => setEditing({ kind: "file", file: f })}><svg viewBox="0 0 16 4" width="16" height="4" aria-hidden><circle cx="2" cy="2" r="1.6" /><circle cx="8" cy="2" r="1.6" /><circle cx="14" cy="2" r="1.6" /></svg></button>
                 </div>
               ))}
             </div>
@@ -289,7 +289,7 @@ function Decorate({ target, meta, tags, fileTags, onClose }: {
         <>
           <div className="dlg-sec">Exam countdown</div>
           <div className="row">
-            <input type="date" className="field" style={{ width: "auto" }} value={exam} onChange={(e) => setExam(e.target.value)} aria-label="Exam date" />
+            <DatePicker value={exam} onChange={setExam} label="Exam date" />
             <input className="field grow" placeholder="e.g. mid-sem" value={examLabel} onChange={(e) => setExamLabel(e.target.value)} aria-label="Exam name" />
           </div>
         </>

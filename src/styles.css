@@ -211,6 +211,26 @@ dialog h2 { margin-bottom: .8rem; }
 .wrap-rel:hover .dots-btn, .dots-btn:focus-visible { opacity: 1; }
 .wrap-rel:has(> .nb) .dots-btn { top: 26px; right: 12px; } /* below the notebook's tape */
 .wrap-rel { position: relative; }
+.dots-btn { display: grid; place-items: center; padding: 0; }
+.dots-btn svg { fill: currentColor; }
+
+/* The exam date picker: a small calendar that opens upwards from its button. */
+.datepick { position: relative; }
+.datepick > .field { width: auto; cursor: pointer; text-align: left; white-space: nowrap; }
+.cal {
+  position: absolute; bottom: calc(100% + 6px); left: 0; z-index: 5; width: 17rem; padding: .7rem;
+  background: var(--card); color: var(--ink); border: 1px solid var(--line); border-radius: 16px; box-shadow: var(--shadow);
+}
+.cal-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: .4rem; }
+.cal-head button, .cal-grid button { border: 0; background: none; color: inherit; cursor: pointer; border-radius: 9px; }
+.cal-head button { font-size: 1.3rem; width: 2rem; height: 2rem; }
+.cal-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 2px; text-align: center; font-size: .9rem; }
+.cal-grid > span { padding: .2rem 0; font-size: .75rem; }
+.cal-grid button { padding: .35rem 0; }
+.cal :is(.cal-head, .cal-grid) button:hover { background: var(--accent-soft); }
+.cal-grid .is-today { box-shadow: inset 0 0 0 1.5px var(--accent); }
+.cal-grid button[aria-pressed="true"] { background: var(--accent); color: #fff; font-weight: 800; }
+.cal > .btn { margin-top: .4rem; }
 
 .empty { text-align: center; padding: 3rem 1rem; }
 .empty .hand { font-size: 1.8rem; }

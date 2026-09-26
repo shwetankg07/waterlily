@@ -68,6 +68,57 @@ export function Dialog({ children, onClose }: { children: ReactNode; onClose: ()
   );
 }
 
+// Weekday initials, Sunday first (4 Jan 2026 was a Sunday), in her language.
+const WEEK = Array.from({ length: 7 }, (_, i) => new Date(2026, 0, 4 + i).toLocaleDateString(undefined, { weekday: "narrow" }));
+
+/**
+ * A little calendar for picking a day; value is "YYYY-MM-DD" or "". Our own rather than <input type="date">,
+ * whose popup on Linux won't close when she clicks elsewhere in a dialog, and looks different on every system.
+ */
+export function DatePicker({ value, onChange, label }: { value: string; onChange: (v: string) => void; label: string }) {
+  const [open, setOpen] = useState(false);
+  const base = value ? new Date(value + "T00:00") : new Date();
+  const [month, setMonth] = useState(new Date(base.getFullYear(), base.getMonth(), 1));
+  const box = useRef<HTMLDivElement>(null);
+  // Any press outside closes it.
+  useEffect(() => {
+    if (!open) return;
+    const away = (e: PointerEvent) => { if (!box.current?.contains(e.target as Node)) setOpen(false); };
+    document.addEventListener("pointerdown", away);
+    return () => document.removeEventListener("pointerdown", away);
+  }, [open]);
+  const y = month.getFullYear(), m = month.getMonth();
+  const days = new Date(y, m + 1, 0).getDate();
+  const pick = (iso: string) => { onChange(iso); setOpen(false); };
+  return (
+    <div className="datepick" ref={box}
+      // Esc closes just the calendar, not the whole dialog around it.
+      onKeyDown={(e) => { if (e.key === "Escape" && open) { e.preventDefault(); e.stopPropagation(); setOpen(false); } }}>
+      <button type="button" className="field" aria-label={label} aria-expanded={open} onClick={() => setOpen(!open)}>
+        {value ? new Date(value + "T00:00").toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "short", year: "numeric" }) : "Pick a date"}
+      </button>
+      {open && (
+        <div className="cal" role="group" aria-label={label}>
+          <div className="cal-head">
+            <button type="button" onClick={() => setMonth(new Date(y, m - 1, 1))} aria-label="Previous month">‹</button>
+            <b>{month.toLocaleDateString(undefined, { month: "long", year: "numeric" })}</b>
+            <button type="button" onClick={() => setMonth(new Date(y, m + 1, 1))} aria-label="Next month">›</button>
+          </div>
+          <div className="cal-grid">
+            {WEEK.map((w, i) => <span key={"w" + i} className="muted">{w}</span>)}
+            {Array.from({ length: month.getDay() }, (_, i) => <span key={"b" + i} />)}
+            {Array.from({ length: days }, (_, i) => {
+              const iso = today(new Date(y, m, i + 1));
+              return <button type="button" key={iso} aria-pressed={iso === value} className={iso === today() ? "is-today" : ""} onClick={() => pick(iso)}>{i + 1}</button>;
+            })}
+          </div>
+          {value && <button type="button" className="btn small ghost" onClick={() => pick("")}>Clear date</button>}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // Notebook and tag colors: ten pinks, from blush to raspberry.
 export const PASTELS = [
   "#ffe4ef", "#ffd3e5", "#ffc4dc", "#ffb3d1", "#ff9fc6",
