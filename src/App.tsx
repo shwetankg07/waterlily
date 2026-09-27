@@ -9,6 +9,7 @@ import Home from "./Home";
 import Library from "./Library";
 import Reader from "./Reader";
 import Board from "./Board";
+import TodoList from "./Todo";
 import Garden, { Plant } from "./Garden";
 import Settings, { ThemePicker, applyTheme } from "./Settings";
 
@@ -18,6 +19,7 @@ export type View =
   | { name: "reader"; fileId: number; page?: number }
   | { name: "board" }
   | { name: "garden" }
+  | { name: "todo" }
   | { name: "settings" };
 export type Go = (v: View | { name: "back" }) => void;
 
@@ -31,6 +33,7 @@ const NAV: [View["name"], ReactNode, string][] = [
   ["home", icon("M3 10.5 12 3l9 7.5V20a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"), "Home"],
   ["library", icon("M2 4h6a4 4 0 0 1 4 4v13a3 3 0 0 0-3-3H2zM22 4h-6a4 4 0 0 0-4 4v13a3 3 0 0 1 3-3h7z"), "Library"],
   ["board", icon("m9 11-6 6v3h9l3-3M22 12l-4.6 4.6a2 2 0 0 1-2.8 0l-5.2-5.2a2 2 0 0 1 0-2.8L14 4"), "Highlights"],
+  ["todo", icon("M9 6h11M9 12h11M9 18h11M4 5.5l1 1 2-2M4 11.5l1 1 2-2M4 17.5l1 1 2-2"), "To-do"],
   ["garden", icon("M12 7.5a4.5 4.5 0 1 1 4.5 4.5 4.5 4.5 0 1 1-4.5 4.5 4.5 4.5 0 1 1-4.5-4.5A4.5 4.5 0 1 1 12 7.5M12 10a2 2 0 1 0 0 4 2 2 0 0 0 0-4"), "Garden"],
   ["settings", icon("M21 4h-7M10 4H3M21 12h-9M8 12H3M21 20h-5M12 20H3M14 2v4M8 10v4M16 18v4"), "Settings"],
 ];
@@ -95,6 +98,7 @@ export default function App() {
         {view.name === "reader" && <Reader key={view.fileId + ":" + view.page} fileId={view.fileId} page={view.page} go={go} />}
         {view.name === "board" && <Board go={go} />}
         {view.name === "garden" && <Garden />}
+        {view.name === "todo" && <TodoList />}
         {view.name === "settings" && <Settings />}
       </main>
     </div>

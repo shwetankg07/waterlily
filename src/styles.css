@@ -113,6 +113,29 @@ h2.hand { font-size: 1.5rem; }
 main { overflow: auto; position: relative; }
 .page-wrap { padding: 2rem 2.4rem 3rem; }
 
+/* ---------- to-do ---------- */
+.todo-page { max-width: 760px; }
+.todo-page > h1 { margin-bottom: .2rem; }
+.todo-add { margin: 1.2rem 0 .8rem; }
+.todos { list-style: none; margin: 0; padding: 0; display: grid; gap: .45rem; }
+.todo {
+  display: flex; align-items: center; gap: .7rem; padding: .55rem .8rem; border-radius: 14px;
+  background: var(--card); border: 1px solid var(--line); box-shadow: var(--shadow);
+}
+.tick {
+  flex: none; width: 24px; height: 24px; border-radius: 50%; border: 2px solid var(--accent); background: none;
+  color: transparent; display: grid; place-items: center; cursor: pointer; padding: 0;
+}
+.tick:hover { background: var(--accent-soft); }
+.tick[aria-pressed="true"] { background: var(--accent); color: #fff; }
+.todo-text { flex: 1; min-width: 0; border: 0; background: none; font: inherit; color: var(--ink); padding: .2rem .3rem; border-radius: 8px; }
+.todo-text:focus { outline: none; background: var(--accent-soft); }
+.todo.done { box-shadow: none; opacity: .75; }
+.todo.done .todo-text { text-decoration: line-through; color: var(--muted); }
+.todo-del { flex: none; border: 0; background: none; color: var(--muted); font-size: 1.3rem; line-height: 1; cursor: pointer; border-radius: 8px; width: 28px; height: 28px; }
+.todo-del:hover { background: var(--accent-soft); color: var(--ink); }
+.todo-done-head { margin: 1.6rem 0 .5rem; align-items: center; }
+
 /* ---------- controls ---------- */
 .btn {
   border: 1px solid var(--glass-line); background: var(--glass); padding: .45rem .95rem; border-radius: 14px;
@@ -254,6 +277,9 @@ dialog h2 { margin-bottom: .8rem; }
 .seg button[aria-pressed="true"] { background: var(--card); box-shadow: var(--shadow); }
 .rbody { display: grid; grid-template-columns: minmax(0, 1fr) 300px; min-height: 0; } /* minmax: zoomed pages scroll instead of sliding under the panel */
 .rbody.nopanel { grid-template-columns: minmax(0, 1fr); }
+/* Focus mode (useFocusMode): just the page and the tools. */
+.focus .app, .focus .rbody { grid-template-columns: minmax(0, 1fr); }
+.focus :is(.side, .panel) { display: none; }
 .pages { overflow: auto; padding: 1.5rem 1rem 4rem; touch-action: pan-x pan-y; }
 .pages.pen-near { touch-action: none; } /* stylus in use: the palm can't scroll, the pen can select */
 .pdfpage {
@@ -366,7 +392,8 @@ select.field option { background: var(--card); color: var(--ink); }
   container-type: inline-size;
 }
 .graph .m { font-size: .72rem; color: var(--muted); font-weight: 700; white-space: nowrap; overflow: visible; }
-.graph .wd { font-size: .68rem; color: var(--muted); align-self: center; }
+/* line-height 0: the labels mustn't make their rows (Mon, Wed, Fri) taller than the others. */
+.graph .wd { font-size: .68rem; color: var(--muted); align-self: center; line-height: 0; }
 .cell { width: 100%; aspect-ratio: 1; border-radius: 26%; background: var(--line); position: relative; }
 .legend .cell { width: 12px; height: 12px; }
 .cell.l1 { background: color-mix(in srgb, var(--accent) 28%, var(--card)); }
@@ -374,8 +401,10 @@ select.field option { background: var(--card); color: var(--ink); }
 .cell.l3 { background: color-mix(in srgb, var(--accent) 78%, var(--card)); }
 .cell.l4 { background: transparent; }
 .cell.l4::after { content: "✿"; position: absolute; inset: -12%; display: grid; place-items: center; font-size: min(17px, 2.2cqw); color: var(--accent); line-height: 1; }
-.cell.today { outline: 2px solid var(--ink); outline-offset: 1px; }
-.cell.future { background: none; }
+/* Drawn inside the square, so today doesn't look bigger than the rest. */
+.cell.today { box-shadow: inset 0 0 0 2px var(--ink); }
+/* The rest of this week: faint outlines, so the grid is always a full rectangle. */
+.cell.future { background: none; box-shadow: inset 0 0 0 1.5px var(--line); }
 .legend { display: flex; gap: 4px; align-items: center; font-size: .78rem; color: var(--muted); margin-top: .7rem; }
 
 /* ---------- focus timer ---------- */

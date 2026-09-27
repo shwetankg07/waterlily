@@ -6,6 +6,8 @@ A cozy, fully offline home for your PDF notes. Highlight in colors that mean som
 
 - **Highlight PDFs** in named colors (definition, important, formula…), with a note on any highlight. Select text and pick a color (keys `1`–`9` work too), swipe over it with the highlighter, or draw freely with the marker.
 - **Write by hand.** Make a new note on lined, grid, dotted or blank paper and write with a pressure-sensitive pen, or tap anywhere and type. There's an eraser (the stylus's eraser end works too), undo/redo, and palm rejection, so a resting hand doesn't draw or scroll.
+- **Focus mode** (the Focus button or `F`): fullscreen with just the page and your tools; `Esc` leaves it.
+- **A to-do list** to jot tasks down and tick them off.
 - **Photos of notes** (PNG, JPG, WEBP, GIF, BMP): drag a box over any part to highlight it and add a note.
 - **Everything lives in the PDF.** Highlights, handwriting and typed text are saved as standard PDF annotations, so they show up in Edge, Adobe, Okular or on your phone. Highlights made in those apps are imported too.
 - **Your folders, decorated.** The app mirrors your notes folder: subfolders become notebooks you can color, cover with a picture, stick emoji on and give an exam countdown. Moving things in the app moves them on disk.

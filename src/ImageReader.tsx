@@ -3,7 +3,7 @@ import { q, run, logActivity, parseHl, colors, type Color, type FileRow, type Hi
 import { imageUrl, displayName, changed } from "./lib";
 import type { Rect } from "./pdfcore";
 import { sound, sparkle, toast } from "./fx";
-import { useVersion, usePinch } from "./ui";
+import { useVersion, usePinch, useFocusMode } from "./ui";
 import { HighlightPop, type Active } from "./Reader";
 import type { Go } from "./App";
 
@@ -27,6 +27,7 @@ export default function ImageReader({ fileId, go }: { fileId: number; page?: num
   const [active, setActive] = useState<Active | null>(null);
   const [revealed, setRevealed] = useState<Set<string>>(new Set());
   const [panel, setPanel] = useState(true);
+  const [focus, setFocus] = useFocusMode();
   const box = useRef<HTMLDivElement>(null);
   const scroller = useRef<HTMLDivElement>(null);
   // Where the box being dragged began, and which pointer is dragging it (a palm landing or lifting doesn't count).
@@ -183,7 +184,8 @@ export default function ImageReader({ fileId, go }: { fileId: number; page?: num
   useEffect(() => {
     const k = (e: KeyboardEvent) => {
       if ((e.target as HTMLElement).closest?.("input, textarea")) return;
-      if (e.key === "Escape") { setPending(null); setActive(null); }
+      if (e.key === "Escape") { if (!pending && !active && focus) setFocus(false); setPending(null); setActive(null); }
+      if (e.key === "f" && !e.ctrlKey && !e.metaKey) setFocus(!focus);
       if (pending && /^[1-9]$/.test(e.key) && cols[+e.key - 1]) void createHighlight(cols[+e.key - 1].id);
       if ((e.ctrlKey || e.metaKey) && (e.key === "=" || e.key === "+")) { e.preventDefault(); zoom(1.15); }
       if ((e.ctrlKey || e.metaKey) && e.key === "-") { e.preventDefault(); zoom(1 / 1.15); }
@@ -213,7 +215,11 @@ export default function ImageReader({ fileId, go }: { fileId: number; page?: num
         <button className="btn small" onClick={() => zoom(1 / 1.15)} aria-label="Zoom out">−</button>
         <span className="muted" style={{ minWidth: "3.2em", textAlign: "center" }}>{Math.round(scale * 100)}%</span>
         <button className="btn small" onClick={() => zoom(1.15)} aria-label="Zoom in">+</button>
-        <button className="btn small" aria-pressed={panel} onClick={() => setPanel(!panel)}>Notes</button>
+        {!focus && <button className="btn small" aria-pressed={panel} onClick={() => setPanel(!panel)}>Notes</button>}
+        <button className="btn small" aria-pressed={focus} onClick={() => setFocus(!focus)} title={focus ? "Leave focus mode (Esc)" : "Focus: just the page and your tools (F)"}>
+          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden style={{ verticalAlign: "-2px", marginRight: 4 }}>
+            <path d={focus ? "M9 4v5H4M15 4v5h5M9 20v-5H4M15 20v-5h5" : "M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"} /></svg>{focus ? "Exit focus" : "Focus"}
+        </button>
       </div>
 
       <div className={`rbody ${panel ? "" : "nopanel"}`}>

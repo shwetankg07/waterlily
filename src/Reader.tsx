@@ -5,7 +5,7 @@ import { readBytes, openPdf, importNew, markDirty, flushSaves, displayName, chan
 import { toPdfRect, toViewBox, mergeLineRects, AUTHOR, NM_PREFIX, penOptions, type Rect } from "./pdfcore";
 import { getStroke } from "perfect-freehand";
 import { sound, sparkle, toast } from "./fx";
-import { useVersion, useData, usePinch } from "./ui";
+import { useVersion, useData, usePinch, useFocusMode } from "./ui";
 import ImageReader from "./ImageReader";
 import type { Go } from "./App";
 
@@ -197,6 +197,7 @@ function PdfReader({ fileId, page: startPage, go }: { fileId: number; page?: num
   const [ink, setInkState] = useState(lastInk);
   const [size, setSizeState] = useState(lastSize);
   const [editing, setEditing] = useState<Editing | null>(null);
+  const [focus, setFocus] = useFocusMode();
   const setTool = (t: Tool) => { lastTool = t; setToolState(t); setPending(null); getSelection()?.removeAllRanges(); };
   const setPen = (c: number) => { lastPen = c; setPenState(c); };
   // Ink and text size also restyle the box being typed in.
@@ -713,7 +714,9 @@ function PdfReader({ fileId, page: startPage, go }: { fileId: number; page?: num
   useEffect(() => {
     const k = (e: KeyboardEvent) => {
       if ((e.target as HTMLElement).closest?.("input, textarea")) return;
-      if (e.key === "Escape") { setPending(null); setActive(null); }
+      // Esc closes a popover first; with none open, it leaves focus mode.
+      if (e.key === "Escape") { if (!pending && !active && focus) setFocus(false); setPending(null); setActive(null); }
+      if (e.key === "f" && !e.ctrlKey && !e.metaKey) setFocus(!focus);
       if (pending && /^[1-9]$/.test(e.key) && cols[+e.key - 1]) void createHighlight(cols[+e.key - 1].id);
       else if (!pending && (tool === "highlight" || tool === "marker") && /^[1-9]$/.test(e.key) && cols[+e.key - 1]) setPen(cols[+e.key - 1].id);
       else if (tool === "pen" && /^[1-9]$/.test(e.key) && INKS[+e.key - 1]) setInk(INKS[+e.key - 1]);
@@ -871,7 +874,11 @@ function PdfReader({ fileId, page: startPage, go }: { fileId: number; page?: num
           <span className="muted" style={{ minWidth: "3.2em", textAlign: "center" }}>{Math.round(scale * 100)}%</span>
           <button className="btn small" onClick={() => zoom(1.15)} aria-label="Zoom in">+</button>
         </>}
-        <button className="btn small" aria-pressed={panel} onClick={() => setPanel(!panel)}>Notes</button>
+        {!focus && <button className="btn small" aria-pressed={panel} onClick={() => setPanel(!panel)}>Notes</button>}
+        <button className="btn small" aria-pressed={focus} onClick={() => setFocus(!focus)} title={focus ? "Leave focus mode (Esc)" : "Focus: just the page and your tools (F)"}>
+          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden style={{ verticalAlign: "-2px", marginRight: 4 }}>
+            <path d={focus ? "M9 4v5H4M15 4v5h5M9 20v-5H4M15 20v-5h5" : "M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"} /></svg>{focus ? "Exit focus" : "Focus"}
+        </button>
       </div>
 
       <div className={`rbody ${panel ? "" : "nopanel"}`}>

@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { changes } from "./lib";
 import { q, today } from "./db";
 import { toast } from "./fx";
@@ -47,6 +48,28 @@ export function usePinch(ref: React.RefObject<HTMLElement | null>, zoom: React.R
     return () => { for (const k of kinds) el.removeEventListener(k, on); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, deps);
+}
+
+/**
+ * Focus mode for the readers: the window goes fullscreen and the sidebar and notes panel hide
+ * (html.focus in styles.css), leaving the page and the tools. It stays on for the next PDF.
+ */
+let focusOn = false;
+export function useFocusMode() {
+  const [on, setOn] = useState(focusOn);
+  const windowFull = useRef(false);
+  useEffect(() => {
+    focusOn = on;
+    document.documentElement.classList.toggle("focus", on);
+    // Only when it changes: never pull a window the system made fullscreen out of it.
+    if (on !== windowFull.current) { windowFull.current = on; void getCurrentWindow().setFullscreen(on).catch(() => {}); }
+  }, [on]);
+  // Leaving the reader gives the rest of the app its sidebar (and a normal window) back.
+  useEffect(() => () => {
+    document.documentElement.classList.remove("focus");
+    if (windowFull.current) void getCurrentWindow().setFullscreen(false).catch(() => {});
+  }, []);
+  return [on, setOn] as const;
 }
 
 /** Native <dialog>, opened while mounted. Closes on Esc, or a click that starts and ends on the backdrop. */
