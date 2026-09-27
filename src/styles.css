@@ -456,8 +456,39 @@ select.field option { background: var(--card); color: var(--ink); }
 .home-grid .garden-tile :is(h2, p), .tile-empty p { margin: 0; }
 .tile-empty { flex: 1; display: grid; place-content: center; justify-items: center; gap: .9rem; text-align: center; }
 .recent-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: .5rem; }
-@media (max-width: 1000px) {
+@media (max-width: 1000px), (orientation: portrait) {
   .home-grid { grid-template-columns: 1fr; grid-template-rows: none; grid-template-areas: "reading" "garden" "exams" "graph"; }
+}
+
+/* ---------- tall screens (a folding laptop held upright, or a narrow window) ----------
+   Keep in step with PORTRAIT in ui.tsx. The sidebar becomes a bar along the bottom and the
+   reader's notes panel slides over the page, so the page gets the whole width. */
+@media (orientation: portrait), (max-width: 760px) {
+  .app { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) auto; }
+  main { grid-row: 1; }
+  .side {
+    grid-row: 2; flex-direction: row; align-items: center; gap: .15rem; overflow-x: auto;
+    padding: .3rem .5rem calc(.3rem + env(safe-area-inset-bottom, 0px)); border-right: 0; border-top: 1px solid var(--glass-line);
+  }
+  .side .logo { display: none; }
+  .side .nav { flex: 1 0 auto; flex-direction: column; gap: .1rem; padding: .35rem .45rem; font-size: .72rem; }
+  .side-foot { margin: 0 0 0 .3rem; display: flex; align-items: center; gap: .4rem; }
+  .timer { display: flex; align-items: center; gap: .45rem; padding: .3rem .5rem; }
+  .timer > .muted { display: none; }
+  .timer .t { font-size: 1.05rem; }
+  .mini-streak { font-size: .8rem; padding: .2rem .3rem; }
+  .page-wrap { padding: 1.4rem 1.1rem 2rem; }
+  .rbar { padding: .5rem .7rem; gap: .4rem; }
+  .rbar .title { max-width: 16ch; }
+  .rbody, .rbody.nopanel { grid-template-columns: minmax(0, 1fr); position: relative; }
+  html .rbody .panel {
+    position: absolute; top: 0; right: 0; bottom: 0; width: min(340px, 88%); z-index: 20;
+    background: var(--card); border-left: 1px solid var(--line); box-shadow: -8px 0 30px rgb(0 0 0 / .15);
+  }
+  /* A tall screen has room to spare: tiles take the height they need instead of stretching. */
+  .home-grid { align-content: start; }
+  .home-grid .garden-tile { padding-block: 1.4rem; }
+  .pages { padding-inline: .5rem; }
 }
 
 /* ---------- photos of notes ---------- */

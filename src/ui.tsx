@@ -50,6 +50,9 @@ export function usePinch(ref: React.RefObject<HTMLElement | null>, zoom: React.R
   }, deps);
 }
 
+/** Tall screens (a folding laptop held upright): same query as the portrait layout in styles.css. */
+export const PORTRAIT = "(orientation: portrait), (max-width: 760px)";
+
 /**
  * Focus mode for the readers: the window goes fullscreen and the sidebar and notes panel hide
  * (html.focus in styles.css), leaving the page and the tools. It stays on for the next PDF.

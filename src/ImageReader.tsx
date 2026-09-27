@@ -3,7 +3,7 @@ import { q, run, logActivity, parseHl, colors, type Color, type FileRow, type Hi
 import { imageUrl, displayName, changed } from "./lib";
 import type { Rect } from "./pdfcore";
 import { sound, sparkle, toast } from "./fx";
-import { useVersion, usePinch, useFocusMode } from "./ui";
+import { useVersion, usePinch, useFocusMode, PORTRAIT } from "./ui";
 import { HighlightPop, type Active } from "./Reader";
 import type { Go } from "./App";
 
@@ -26,7 +26,8 @@ export default function ImageReader({ fileId, go }: { fileId: number; page?: num
   const [pending, setPending] = useState<{ rect: Rect; x: number; y: number } | null>(null);
   const [active, setActive] = useState<Active | null>(null);
   const [revealed, setRevealed] = useState<Set<string>>(new Set());
-  const [panel, setPanel] = useState(true);
+  // In portrait the notes panel slides over the page, so it starts closed there.
+  const [panel, setPanel] = useState(() => !matchMedia(PORTRAIT).matches);
   const [focus, setFocus] = useFocusMode();
   const box = useRef<HTMLDivElement>(null);
   const scroller = useRef<HTMLDivElement>(null);

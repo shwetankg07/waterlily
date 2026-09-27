@@ -5,7 +5,7 @@ import { readBytes, openPdf, importNew, markDirty, flushSaves, displayName, chan
 import { toPdfRect, toViewBox, mergeLineRects, AUTHOR, NM_PREFIX, penOptions, type Rect } from "./pdfcore";
 import { getStroke } from "perfect-freehand";
 import { sound, sparkle, toast } from "./fx";
-import { useVersion, useData, usePinch, useFocusMode } from "./ui";
+import { useVersion, useData, usePinch, useFocusMode, PORTRAIT } from "./ui";
 import ImageReader from "./ImageReader";
 import type { Go } from "./App";
 
@@ -190,7 +190,8 @@ function PdfReader({ fileId, page: startPage, go }: { fileId: number; page?: num
   const [active, setActive] = useState<Active | null>(null);
   const [revealed, setRevealed] = useState<Set<string>>(new Set());
   const [fresh, setFresh] = useState<Set<string>>(new Set());
-  const [panel, setPanel] = useState(true);
+  // In portrait the notes panel slides over the page, so it starts closed there.
+  const [panel, setPanel] = useState(() => !matchMedia(PORTRAIT).matches);
   const [cur, setCur] = useState(1);
   const [tool, setToolState] = useState<Tool>(lastTool);
   const [pen, setPenState] = useState<number | null>(lastPen);
